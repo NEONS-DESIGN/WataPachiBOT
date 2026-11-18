@@ -1,0 +1,4 @@
+{
+	"ops": ["resolve", "flat_playlist", "search", "ping"],
+	"error_codes": ["not_found", "private", "geo_blocked", "age_restricted", "rate_limited", "unsupported_url", "internal"]
+}

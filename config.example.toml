@@ -1,0 +1,108 @@
+# WataPachiBOT の設定ファイルの見本。config.toml にコピーして使う。
+# トークンは .env の DISCORD_TOKEN に置く。値はすべて既定値。
+# 時間の設定 (*_secs) は 604800 (7 日) 以下にする。shutdown.timeout_secs は 600 以下。alone_timeout の項目と [cache] は対象外。
+
+[bot]
+prefix = "?"
+log_level = "info"
+log_retention_days = 30
+activity_name = "{prefix}help"  # Bot のステータス (プレイ中) に出す名前。{prefix} は接頭辞に置き換える
+
+[paths]
+database = "data/bot.db"
+logs = "logs"
+ytdlp_cache = "data/ytdlp-cache"
+worker_envs = "worker/envs"
+worker_python = "worker/.venv/Scripts/python.exe"  # uv の venv の python.exe
+worker_script = "worker/worker.py"
+uv = "uv"                     # uv の実行ファイル。PATH から探す
+
+[defaults]
+volume = 0.25
+queue_limit = 5000
+playlist_limit = 200
+alone_timeout_secs = 10
+lang = "ja"                   # 文面の言語 (ja / en)。サーバーごとに ?setting lang で変えられる
+
+[limits]
+queue_limit_max = 10000
+playlist_limit_max = 5000
+alone_timeout_max_secs = 600
+actor_mailbox = 64
+actor_idle_timeout_secs = 600  # voice.join_timeout_secs + voice.call_timeout_secs × 2 + 2 秒より長くする
+
+[worker]
+worker_count = 2              # 1 から 16
+prefetch_reserved_workers = 1
+resolve_timeout_secs = 30     # ワーカーへ渡す 1 要求の持ち時間は、ここから 2 秒を引いた値
+startup_timeout_secs = 60     # 起動 (再起動) したワーカーが最初の ping に答えるまでの上限。超えたら起動の失敗として扱う
+ping_interval_secs = 30
+max_retries = 3
+rate_limit_backoff_secs = 5   # rate_limited の最初の待ち時間。やり直すたびに倍にする
+rate_limit_backoff_max_secs = 60
+cookies_browser = "firefox"   # 空欄で Cookie を使わない
+youtube_premium = "auto"      # yes / no / auto
+user_agent = ""
+
+[update]
+time = "04:00"                # 空欄で更新しない
+recycle_workers_daily = true
+packages = "yt-dlp[default,curl-cffi]"  # 新しい venv に入れるパッケージ (空白区切り)
+python = "3.14"               # 新しい venv の Python の版 (uv venv --python に渡す)
+check_video = "dQw4w9WgXcQ"   # 更新の検査で解決する動画 ID。長く公開されている音楽の動画を選ぶ (Cookie ありの主経路の web_music は、音楽以外の動画を Video unavailable にすることがある)
+install_timeout_secs = 600    # uv の 1 コマンドの上限
+check_timeout_secs = 90       # 新しい環境の起動と検査の上限
+
+[playback]
+chunk_size_bytes = 1048576
+initial_chunk_size_bytes = 262144  # 曲の始めとシークの直後の取得の大きさ。小さいほど最初の音が早い (128KiB 以下は先読みとの兼ね合いと解析の読み戻しで逆に遅くなる)
+chunk_fetch_timeout_secs = 15
+chunk_fetch_attempts = 3
+url_refresh_margin_secs = 300
+available_wait_max_secs = 60  # 解決結果の available_at (広告の秒数) まで最初の取得を待つ上限。0 で待たない
+prefetch_tracks = 2
+slow_notice_secs = 20
+position_save_interval_secs = 5
+skip_streak_limit = 3         # 曲に固有でない理由 (取得の不調) の飛ばしがこの回数続いたら、再生を止めてキューを残す
+pipe_format = "bestaudio[acodec=opus]/bestaudio/best"  # PipeInput が yt-dlp の -f に渡す形式
+
+[health]
+check_interval_secs = 1
+dave_grace_secs = 5
+dave_plaintext_tolerance_frames = 10
+unhealthy_checks = 3
+auto_rejoin_max = 3
+auto_rejoin_window_secs = 600
+
+[voice]
+call_timeout_secs = 10
+join_timeout_secs = 15
+
+[cache]
+playlist_ttl_secs = 14400
+search_days = 30
+track_days = 183
+history_days = 90
+
+[db]
+batch_size = 256
+read_connections = 4
+writer_queue = 4096
+
+[shutdown]
+timeout_secs = 20
+
+[restore]
+stagger_ms = 500
+
+[ui]
+thumbnail_url = "https://i.ytimg.com/vi/{id}/hqdefault.jpg"  # {id} は動画 ID
+watch_url = "https://www.youtube.com/watch?v={id}"
+pagination_timeout_secs = 120  # ページ送りのボタンを受け付ける期間 (最後の操作から数える)
+user_avatar_url = "https://cdn.discordapp.com/avatars/{user}/{hash}.png"  # カードのフッターのアイコン
+member_avatar_url = "https://cdn.discordapp.com/guilds/{guild}/users/{user}/avatars/{hash}.png"
+default_avatar_url = "https://cdn.discordapp.com/embed/avatars/{index}.png"  # {index} は (ユーザー ID >> 22) % 6
+
+[gateway]
+ready_wait_secs = 30  # Ready の後、全ギルドの情報を待つ上限。過ぎたら復元とコマンドの受付を始める
+event_send_timeout_secs = 5  # ボイスの状態の変化をアクターへ届けるまで、混雑時にやり直す上限

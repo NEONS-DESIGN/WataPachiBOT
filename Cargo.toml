@@ -1,0 +1,76 @@
+[package]
+name = "watapachi-bot"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+publish = false
+
+[lib]
+name = "watapachi_bot"
+path = "src/lib.rs"
+
+[[bin]]
+name = "watapachi-bot"
+path = "src/main.rs"
+
+# 手元の試作 (poc/、Git の管理外) をルートのワークスペースに取り込まない
+[workspace]
+exclude = ["poc"]
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+twilight-model = "=0.17.1"
+twilight-gateway = "=0.17.1"
+twilight-http = "=0.17.1"
+twilight-cache-inmemory = "=0.17.1"
+twilight-util = { version = "=0.17.0", default-features = false, features = ["builder", "permission-calculator"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+# 暗号プロバイダは ring に揃える (起動時に install_default する)。aws-lc-rs を入れないため既定の機能を切る
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_Security", "Win32_Security_Authentication_Identity"] }
+windows-service = "0.8.1"
+rpassword = "7.5.5"
+async-trait = "0.1"
+bytes = "1"
+arc-swap = "1"
+jiff = "1.0.0"
+unicode-normalization = "0.1"
+rand = "0.9"
+win32job = "2"
+url = "2.5"
+
+[dependencies.songbird]
+version = "0.6"
+default-features = false
+features = ["driver", "gateway", "twilight", "rustls", "tungstenite"]
+
+[dependencies.symphonia]
+version = "0.5"
+features = ["aac", "isomp4"]
+
+[dev-dependencies]
+axum = "0.8"
+tempfile = "3"
+# 試験で使用中のファイルを再現する (共有モードの定数)
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
+futures = "0.3"
+# 試験で時間を止める (start_paused) ために使う
+tokio = { version = "1", features = ["test-util"] }
+
+# 本番のビルドは速度を優先する。panic は unwind のまま (DbWriter などの catch_unwind を効かせるため)
+[profile.release]
+lto = "fat"
+codegen-units = 1
+
+# Songbird のローカルパッチ (DAVE 送信統計、Seek 時の古い読み取りの破棄)
+[patch.crates-io]
+songbird = { path = "vendor/songbird" }

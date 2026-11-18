@@ -1,0 +1,205 @@
+# User-facing messages (English). {name} is replaced at runtime.
+# Same keys and structure as messages/ja.toml. Keep the emoji, the {name} placeholders, color and admin in sync with it.
+
+[play]
+preparing = { title = "⏳ Preparing", text = "Preparing the audio...", color = "yellow" }
+slow = { title = "⏳ Preparing", text = "Sorry, this is taking longer than usual.\nThe audio is still being prepared. Please wait a moment.", color = "yellow" }
+# Track cards. Only the title and color are kept here; the fields are built from the [ui] parts
+queued = { title = "✅ Added to Queue", color = "blue" }
+now_playing = { title = "🎵 Now Playing", color = "green" }
+playlist_queued = { title = "📝 Playlist Added to Queue", color = "blue" }
+playlist_truncated = { title = "📝 Playlist Added to Queue", color = "blue" }
+queue_full = { title = "⚠️ Load Error", text = "The queue is full (limit: {limit}), so nothing more can be added.", color = "yellow" }
+rate_limited = { title = "⏳ Waiting", text = "YouTube is rate limiting requests. Retrying shortly: {title}", color = "yellow" }
+pipe_fallback = { title = "🔄 Switching Playback Method", text = "A playback problem occurred, so the track will restart from the beginning using another method: {title}", color = "yellow" }
+restored = { title = "▶️ Playback Restored", text = "Resuming from where playback stopped before the restart: {title}", color = "green" }
+restored_paused = { title = "⏸️ Playback Restored", text = "Restored the track from before the restart in a paused state. Use {prefix}resume to continue: {title}", color = "yellow" }
+completed = { title = "✅ Finished playing all tracks.", color = "green" }
+
+[error]
+not_in_voice = { title = "⚠️ Please join a voice channel first.", color = "red" }
+unsupported_url = { title = "⚠️ Load Error", text = "This URL is from an unsupported site, or is not a video or song page. Please specify a YouTube video or song URL.", color = "yellow" }
+# ?p failures. Causes on the user's side are yellow; causes on the Bot's side are red with a note
+lookup_failed = { title = "⚠️ Load Error", text = "Failed to load.\nThis is a problem on the Bot's side. If it persists, please let the Bot's administrator know.", color = "red" }
+lookup_search_empty = { title = "⚠️ Load Error", text = "No playable videos were found. Please try a different search term or URL.", color = "yellow" }
+lookup_not_found = { title = "⚠️ Load Error", text = "The video was not found. Please check that it has not been deleted or made private, and that the URL is correct.", color = "yellow" }
+lookup_private = { title = "⚠️ Load Error", text = "This video is private and cannot be played.", color = "yellow" }
+lookup_geo_blocked = { title = "⚠️ Load Error", text = "This video is not available in this region.", color = "yellow" }
+lookup_age_restricted = { title = "⚠️ Load Error", text = "This video is age-restricted and cannot be played.", color = "yellow" }
+lookup_timeout = { title = "⚠️ Load Error", text = "Could not fetch due to a network error. Please try again later.\nThis is a problem on the Bot's side. If it persists, please let the Bot's administrator know.", color = "red", admin = "The Bot's network connection or the video site may be temporarily down. If this continues, check the network." }
+lookup_playlist_unavailable = { title = "⚠️ Load Error", text = "Could not load the playlist. Please check that the URL is not cut off and that the playlist is not private.", color = "yellow" }
+rate_limited_lookup = { title = "⚠️ Load Error", text = "Access to the video site is temporarily restricted. Please try again later.\nThis is a problem on the Bot's side. If it persists, please let the Bot's administrator know.", color = "red", admin = "Too many requests in a short time. If this continues, check that YouTube is still signed in on Firefox." }
+playlist_empty = { title = "⚠️ Load Error", text = "No playable videos were found. Please try a different search term or URL.", color = "yellow" }
+live_unsupported = { title = "⚠️ Load Error", text = "Live streams are not supported.", color = "yellow" }
+# Tracks skipped because they could not be fetched just before playback
+track_skipped = { title = "⚠️ Skipped", text = "Failed to load `{title}`, so it was skipped.", color = "red" }
+video_private = { title = "⚠️ Skipped", text = "Failed to load `{title}`, so it was skipped.\nThis video is private and cannot be played.", color = "yellow" }
+video_not_found = { title = "⚠️ Skipped", text = "Failed to load `{title}`, so it was skipped.\nThe video was not found. Please check that it has not been deleted or made private, and that the URL is correct.", color = "yellow" }
+video_geo_blocked = { title = "⚠️ Skipped", text = "Failed to load `{title}`, so it was skipped.\nThis video is not available in this region.", color = "yellow" }
+video_age_restricted = { title = "⚠️ Skipped", text = "Failed to load `{title}`, so it was skipped.\nThis video is age-restricted and cannot be played.", color = "yellow" }
+live_skipped = { title = "⚠️ Skipped", text = "Failed to load `{title}`, so it was skipped.\nLive streams are not supported.", color = "yellow" }
+connect_failed = { title = "❌ Connection Error", text = "Could not connect to the voice channel.", color = "red" }
+nothing_playing = { title = "🎵 Nothing is playing right now.", color = "red" }
+already_paused = { title = "⚠️ Notice", text = "Playback is already paused.", color = "yellow" }
+not_paused = { title = "⚠️ Notice", text = "Already playing.", color = "yellow" }
+not_connected = { title = "ℹ️ The Bot is not connected to a voice channel.", color = "red" }
+same_channel = { title = "⚠️ Notice", text = "Already connected to that channel.", color = "yellow" }
+not_same_channel = { title = "⚠️ Notice", text = "Please join the same voice channel as the Bot first.", color = "yellow" }
+index_out_of_range = { title = "⚠️ Out of Range", text = "Please specify a number from 1 to {count}.\nYou can check the numbers with `{prefix}qlist`.", color = "yellow" }
+clear_out_of_range = { title = "⚠️ Out of Range", text = "Please specify a valid number.\nExample: `{prefix}clear 5` or `{prefix}clear 4 8`", color = "yellow" }
+queue_empty = { title = "📝 The queue is empty. Please add some tracks.", color = "red" }
+history_empty = { title = "🕘 No playback history.", color = "red" }
+volume_out_of_range = { title = "⚠️ Input Error", text = "Invalid argument.\nPlease specify a value from {min} to {max}.", color = "yellow" }
+out_of_range = { title = "⚠️ Input Error", text = "Invalid argument.\nPlease specify a value from {min} to {max}.", color = "yellow" }
+invalid_argument = { title = "⚠️ Input Error", text = "Invalid argument.\n{usage}", color = "yellow" }
+no_permission = { title = "❌ Permission Error", text = "You do not have permission to run this command.", color = "red" }
+audio_failed = { title = "❌ An Error Occurred", text = "The audio operation failed. Please try again.", color = "red" }
+save_failed = { title = "❌ An Error Occurred", text = "Could not save the change. Please try again later.", color = "red" }
+# The save for ?setting passed the time limit. It continues, and the result is sent separately when done
+save_slow = { title = "⚠️ Notice", text = "Saving is taking longer than usual. The result will be posted when it finishes.", color = "yellow" }
+read_failed = { title = "❌ An Error Occurred", text = "Could not load the information. Please try again later.", color = "red" }
+recovering = { title = "⚠️ Notice", text = "Recovering the voice connection. Please wait a moment and try again.", color = "yellow" }
+busy = { title = "⚠️ Notice", text = "The server is busy. Please wait a moment and try again.", color = "yellow" }
+starting = { title = "⚠️ Notice", text = "The Bot is starting up. Please wait a moment and try again.", color = "yellow" }
+rejoin_limit = { title = "⚠️ Connection Trouble", text = "Playback was paused because the voice connection kept failing. Use {prefix}rejoin to reconnect.", color = "yellow" }
+rejoin_failed = { title = "⚠️ Playback Stopped", text = "Left the channel because the Bot could not reconnect to the voice channel. The queue has been kept. Add a track with {prefix}p to resume from the top of the queue.", color = "red" }
+restore_failed = { title = "⚠️ Playback Stopped", text = "Could not connect to the voice channel, so playback from before the restart could not be restored. The queue has been kept. Add a track with {prefix}p to resume from the top of the queue.", color = "red" }
+fetch_stopped = { title = "⚠️ Playback Stopped", text = "Tracks repeatedly failed to load, so playback was stopped and the Bot left the channel. The queue has been kept. Add a track with {prefix}p later to resume from the top of the queue.", color = "red" }
+rate_limited_stopped = { title = "⚠️ Playback Stopped", text = "YouTube kept rate limiting requests, so playback was stopped and the Bot left the channel. The queue has been kept. Add a track with {prefix}p later to resume from the top of the queue.", color = "red" }
+
+[control]
+paused = { title = "⏸️ Paused", text = "Playback has been paused.", color = "yellow" }
+resumed = { title = "▶️ Resumed", text = "Playback has been resumed.", color = "green" }
+skipped = { title = "⏭️ Skipped the track.", color = "green" }
+left = { title = "👋 Left the channel. See you!", color = "green" }
+auto_left = { title = "👋 Stopping playback because no one is listening", text = "Left the voice channel.", color = "yellow" }
+moved = { title = "🚚 Moved", text = "Moved to **{channel}**.", color = "blue" }
+volume = { title = "🔊 Volume set to {percent}%.", color = "green" }
+loop_on = { title = "🔁 Loop is now ON.", color = "green" }
+loop_off = { title = "🔁 Loop is now OFF.", color = "green" }
+rejoined = { title = "✅ Reconnected", text = "Reconnected to the voice channel. Continuing from where the queue left off.", color = "green" }
+kicked = { title = "👋 Disconnected", text = "The Bot was disconnected from the voice channel, so the queue has been cleared.", color = "yellow" }
+
+[queue]
+cleared = { title = "🗑️ Queue Cleared", text = "Tracks removed from the queue: **{count}**", color = "green" }
+shuffled = { title = "🔀 Shuffled the queue.", color = "green" }
+
+[setting]
+admin_added = { title = "✅ Permission Granted", text = "Granted Bot control permission to {user}.", color = "green" }
+admin_already = { title = "⚠️ Notice", text = "{user} is already a Bot administrator.", color = "yellow" }
+admin_removed = { title = "✅ Permission Revoked", text = "Revoked Bot control permission from {user}.", color = "green" }
+admin_missing = { title = "⚠️ Notice", text = "{user} is not a Bot administrator.", color = "yellow" }
+queue_limit = { title = "✅ Settings Updated", text = "Maximum queue size set to **{value}**.", color = "green" }
+playlist_limit = { title = "✅ Settings Updated", text = "Playlist load limit set to **{value}**.", color = "green" }
+autoleave = { title = "✅ Settings Updated", text = "Auto-leave delay set to **{secs}** s. The Bot will leave once no listeners have remained for that long.", color = "green" }
+autoleave_off = { title = "✅ Settings Updated", text = "The Bot will no longer leave automatically when no listeners remain.", color = "green" }
+lang = { title = "✅ Settings Updated", text = "Bot language set to **English**.", color = "green" }
+
+[ui]
+field_title = "Title"
+field_duration = "Duration"
+field_waiting_name = "In Queue"
+field_waiting = "{count}"
+field_playlist_name = "Playlist"
+field_added = "Tracks Added"
+field_added_value = "{count}"
+field_rejected = "Tracks Not Added"
+field_rejected_value = "{count} (queue limit)"
+field_requester = "Requested by"
+footer_requester = "Requested by: {name}"
+card_failed = "{title}\n(Failed to show the details)"
+unknown_title = "Unknown Title"
+admin_field = "🔧 For Administrators"
+queue_title = "📝 Queue (page {page}/{total})"
+history_title = "🕘 Playback History (page {page}/{total})"
+
+[help]
+title_1 = "📖 Command Help #1 (Playback & Basics)"
+title_2 = "📖 Command Help #2 (Queue, Volume & History)"
+title_3 = "📖 Command Help #3 (Bot Admin & Settings)"
+mention = { text = "Need help?\nIf so, run the `{prefix}help` command.", color = "green" }
+usage_p = "Usage: `{prefix}p <URL or song name>`\nExample: `{prefix}p https://www.youtube.com/watch?v=dQw4w9WgXcQ`, `{prefix}p song name`"
+usage_pnow = "Usage: `{prefix}pnow <number>`\nExample: `{prefix}pnow 3` (plays the 3rd track in the queue right now)"
+usage_clear = "Usage: `{prefix}clear [start] [end]`\nExample: `{prefix}clear` (all), `{prefix}clear 5` (first 5), `{prefix}clear 3 8` (3rd to 8th)"
+usage_vol = "Usage: `{prefix}vol <1-200>`\nExample: `{prefix}vol 50`"
+usage_setting = "Usage:\n`{prefix}setting admin add <member>` / `{prefix}setting admin remove <member>`\n`{prefix}setting limit queue <value>` / `{prefix}setting limit playlist <value>`\n`{prefix}setting autoleave <seconds>`\n`{prefix}setting lang <ja/en>`"
+
+[[help.page_1]]
+name = "{prefix}help"
+value = "Shows this help screen."
+
+[[help.page_1]]
+name = "{prefix}p [URL / title]"
+value = "Plays music (supports YouTube video and playlist URLs, and searching by song name)."
+
+[[help.page_1]]
+name = "{prefix}pause"
+value = "Pauses the current track."
+
+[[help.page_1]]
+name = "{prefix}resume"
+value = "Resumes the paused track."
+
+[[help.page_1]]
+name = "{prefix}replay"
+value = "Restarts the current track from the beginning."
+
+[[help.page_1]]
+name = "{prefix}skip"
+value = "Skips the current track."
+
+[[help.page_2]]
+name = "{prefix}qlist"
+value = "Shows the list of tracks in the queue."
+
+[[help.page_2]]
+name = "{prefix}history"
+value = "Shows the playback history."
+
+[[help.page_2]]
+name = "{prefix}pnow [number]"
+value = "Plays the specified track in the queue right now. The current track restarts from the beginning as the next track."
+
+[[help.page_2]]
+name = "{prefix}clear [start] [end]"
+value = "Removes tracks from the queue. With no arguments, removes all; a range can also be given."
+
+[[help.page_2]]
+name = "{prefix}loop"
+value = "Toggles looping of the queue."
+
+[[help.page_2]]
+name = "{prefix}sh"
+value = "Shuffles the queue."
+
+[[help.page_2]]
+name = "{prefix}vol [1-200]"
+value = "Changes the playback volume and saves the setting."
+
+[[help.page_3]]
+name = "{prefix}move"
+value = "Moves the Bot to your voice channel."
+
+[[help.page_3]]
+name = "{prefix}rejoin"
+value = "Makes the Bot leave and rejoin, then resumes playback."
+
+[[help.page_3]]
+name = "{prefix}leave"
+value = "Makes the Bot leave the voice channel and clears the queue."
+
+[[help.page_3]]
+name = "{prefix}setting admin [add/remove] [member]"
+value = "Grants or revokes Bot control permission."
+
+[[help.page_3]]
+name = "{prefix}setting limit [queue/playlist] [value]"
+value = "Sets the limits (queue / playlist). (Queue 1-{queue_max}, playlist 1-{playlist_max})"
+
+[[help.page_3]]
+name = "{prefix}setting autoleave [0-{autoleave_max}]"
+value = "Sets how many seconds the Bot waits before leaving once no listeners remain (0 = never leave)."
+
+[[help.page_3]]
+name = "{prefix}setting lang [ja/en]"
+value = "Switches the Bot's display language (ja: Japanese, en: English)."

@@ -1,0 +1,209 @@
+# ユーザー向けメッセージ。{name} を実行時に置換する。
+# - 通知は { title = 題名, text = 本文, color = 色, admin = 管理者向けの文 } で持つ
+#   - title と text はどちらかが必須。color は red・yellow・green・blue のどれか (必須)。admin は省略できる
+# - [ui] の項目名などの部品は単なる文字列で持つ
+# - ヘルプのページは [[help.page_N]] の name と value の並びで持つ
+# 必須キーの一覧は src/messages.rs の NOTICE_KEYS・TEXT_KEYS・FIELD_KEYS と一致させる。
+
+[play]
+preparing = { title = "⏳ 準備中", text = "音源を準備しています...", color = "yellow" }
+slow = { title = "⏳ 準備中", text = "大変時間がかかっており申し訳ございません。\n現在、音源を準備しております。もうしばらくお待ちください。", color = "yellow" }
+# 曲のカード。題名と色だけを持ち、項目は [ui] の部品で組み立てる
+queued = { title = "✅ キューに追加", color = "blue" }
+now_playing = { title = "🎵 再生中", color = "green" }
+playlist_queued = { title = "📝 プレイリストをキューに追加", color = "blue" }
+playlist_truncated = { title = "📝 プレイリストをキューに追加", color = "blue" }
+queue_full = { title = "⚠️ 読み込みエラー", text = "キューの上限({limit}曲)に達しているため追加できません。", color = "yellow" }
+rate_limited = { title = "⏳ 待機中", text = "YouTube の利用制限のため、少し待ってから再試行します: {title}", color = "yellow" }
+pipe_fallback = { title = "🔄 再生方式の切り替え", text = "再生に問題が発生したため、別の方式で最初から再生し直します: {title}", color = "yellow" }
+restored = { title = "▶️ 再生の復元", text = "再起動の前の続きから再生します: {title}", color = "green" }
+restored_paused = { title = "⏸️ 再生の復元", text = "再起動の前の曲を一時停止の状態で復元しました。{prefix}resume で再開できます: {title}", color = "yellow" }
+completed = { title = "✅ 全てのトラックの再生が終了しました。", color = "green" }
+
+[error]
+not_in_voice = { title = "⚠️ ボイスチャンネルに接続してから実行してください。", color = "red" }
+unsupported_url = { title = "⚠️ 読み込みエラー", text = "対応していないサイト、または動画・曲のページではない URL です。YouTube の動画や曲のページの URL を指定してください。", color = "yellow" }
+# ?p の失敗。利用者側の原因は黄、Bot 側の原因は赤で添え書きを付ける
+lookup_failed = { title = "⚠️ 読み込みエラー", text = "読み込みに失敗しました。\nBot 側の問題のため、時間をおいても直らない場合は Bot の管理者にお知らせください。", color = "red" }
+lookup_search_empty = { title = "⚠️ 読み込みエラー", text = "再生可能な動画が見つかりませんでした。検索語や URL を変えてお試しください。", color = "yellow" }
+lookup_not_found = { title = "⚠️ 読み込みエラー", text = "動画が見つかりませんでした。削除・非公開になっていないか、URL が正しいか確認してください。", color = "yellow" }
+lookup_private = { title = "⚠️ 読み込みエラー", text = "非公開の動画のため再生できません。", color = "yellow" }
+lookup_geo_blocked = { title = "⚠️ 読み込みエラー", text = "地域制限により、この動画は再生できません。", color = "yellow" }
+lookup_age_restricted = { title = "⚠️ 読み込みエラー", text = "年齢制限のある動画のため再生できません。", color = "yellow" }
+lookup_timeout = { title = "⚠️ 読み込みエラー", text = "通信エラーのため取得できませんでした。時間をおいてお試しください。\nBot 側の問題のため、時間をおいても直らない場合は Bot の管理者にお知らせください。", color = "red", admin = "Bot のネットワーク接続、または動画サイト側の一時的な障害の可能性があります。続く場合はネットワークを確認してください。" }
+lookup_playlist_unavailable = { title = "⚠️ 読み込みエラー", text = "プレイリストを読み込めませんでした。URL が途中で切れていないか、プレイリストが非公開になっていないか確認してください。", color = "yellow" }
+rate_limited_lookup = { title = "⚠️ 読み込みエラー", text = "動画サイトへのアクセスが一時的に制限されています。時間をおいてお試しください。\nBot 側の問題のため、時間をおいても直らない場合は Bot の管理者にお知らせください。", color = "red", admin = "短時間にリクエストが集中しています。続く場合は Firefox の YouTube のログイン状態を確認してください。" }
+playlist_empty = { title = "⚠️ 読み込みエラー", text = "再生可能な動画が見つかりませんでした。検索語や URL を変えてお試しください。", color = "yellow" }
+live_unsupported = { title = "⚠️ 読み込みエラー", text = "ライブ配信には対応していません。", color = "yellow" }
+# 再生の直前に取得できず飛ばした曲
+track_skipped = { title = "⚠️ スキップ", text = "`{title}` の読み込みに失敗したためスキップします。", color = "red" }
+video_private = { title = "⚠️ スキップ", text = "`{title}` の読み込みに失敗したためスキップします。\n非公開の動画のため再生できません。", color = "yellow" }
+video_not_found = { title = "⚠️ スキップ", text = "`{title}` の読み込みに失敗したためスキップします。\n動画が見つかりませんでした。削除・非公開になっていないか、URL が正しいか確認してください。", color = "yellow" }
+video_geo_blocked = { title = "⚠️ スキップ", text = "`{title}` の読み込みに失敗したためスキップします。\n地域制限により、この動画は再生できません。", color = "yellow" }
+video_age_restricted = { title = "⚠️ スキップ", text = "`{title}` の読み込みに失敗したためスキップします。\n年齢制限のある動画のため再生できません。", color = "yellow" }
+live_skipped = { title = "⚠️ スキップ", text = "`{title}` の読み込みに失敗したためスキップします。\nライブ配信には対応していません。", color = "yellow" }
+connect_failed = { title = "❌ 接続エラー", text = "ボイスチャンネルに接続できませんでした。", color = "red" }
+nothing_playing = { title = "🎵 現在、何も再生されていません。", color = "red" }
+already_paused = { title = "⚠️ 通知", text = "既に一時停止中です。", color = "yellow" }
+not_paused = { title = "⚠️ 通知", text = "既に再生中です。", color = "yellow" }
+not_connected = { title = "ℹ️ BOTがボイスチャンネルに接続していません。", color = "red" }
+same_channel = { title = "⚠️ 通知", text = "既にそのチャンネルに接続しています。", color = "yellow" }
+not_same_channel = { title = "⚠️ 通知", text = "Bot と同じボイスチャンネルに参加してから操作してください。", color = "yellow" }
+index_out_of_range = { title = "⚠️ 範囲エラー", text = "1〜{count} の番号を指定してください。\n番号は `{prefix}qlist` で確認できます。", color = "yellow" }
+clear_out_of_range = { title = "⚠️ 範囲エラー", text = "正しい数値を指定してください。\n例: `{prefix}clear 5` または `{prefix}clear 4 8`", color = "yellow" }
+queue_empty = { title = "📝 キューが空です。曲を追加してください。", color = "red" }
+history_empty = { title = "🕘 再生履歴はありません。", color = "red" }
+volume_out_of_range = { title = "⚠️ 入力エラー", text = "引数が正しくありません。\n{min}〜{max} の範囲で指定してください。", color = "yellow" }
+out_of_range = { title = "⚠️ 入力エラー", text = "引数が正しくありません。\n{min}〜{max} の範囲で指定してください。", color = "yellow" }
+invalid_argument = { title = "⚠️ 入力エラー", text = "引数が正しくありません。\n{usage}", color = "yellow" }
+no_permission = { title = "❌ 権限エラー", text = "このコマンドを実行する権限がありません。", color = "red" }
+audio_failed = { title = "❌ エラーが発生しました", text = "音声の操作に失敗しました。もう一度お試しください。", color = "red" }
+save_failed = { title = "❌ エラーが発生しました", text = "変更を保存できませんでした。しばらくしてからもう一度お試しください。", color = "red" }
+# ?setting の保存が上限時間を過ぎた。保存は続けており、終わったら結果を別に返す
+save_slow = { title = "⚠️ 通知", text = "保存に時間がかかっています。終わったら結果をお知らせします。", color = "yellow" }
+read_failed = { title = "❌ エラーが発生しました", text = "情報を読み込めませんでした。しばらくしてからもう一度お試しください。", color = "red" }
+recovering = { title = "⚠️ 通知", text = "音声の接続を回復しています。少し待ってからもう一度お試しください。", color = "yellow" }
+busy = { title = "⚠️ 通知", text = "サーバーの処理が混み合っています。少し待ってからもう一度お試しください。", color = "yellow" }
+starting = { title = "⚠️ 通知", text = "Bot を起動しています。少し待ってからもう一度お試しください。", color = "yellow" }
+rejoin_limit = { title = "⚠️ 接続の不調", text = "音声の接続の不調が続いているため一時停止しました。{prefix}rejoin で再接続できます。", color = "yellow" }
+rejoin_failed = { title = "⚠️ 再生を停止しました", text = "ボイスチャンネルに再接続できなかったため退出しました。キューは残してあります。{prefix}p で曲を追加すると、キューの先頭から再開します。", color = "red" }
+restore_failed = { title = "⚠️ 再生を停止しました", text = "ボイスチャンネルに接続できなかったため、再起動の前の再生を復元できませんでした。キューは残してあります。{prefix}p で曲を追加すると、キューの先頭から再開します。", color = "red" }
+fetch_stopped = { title = "⚠️ 再生を停止しました", text = "曲を続けて取得できなかったため、再生を止めて退出しました。キューは残してあります。しばらくしてから {prefix}p で曲を追加すると、キューの先頭から再開します。", color = "red" }
+rate_limited_stopped = { title = "⚠️ 再生を停止しました", text = "YouTube の利用制限が続いているため、再生を止めて退出しました。キューは残してあります。しばらくしてから {prefix}p で曲を追加すると、キューの先頭から再開します。", color = "red" }
+
+[control]
+paused = { title = "⏸️ 一時停止", text = "再生を一時停止しました。", color = "yellow" }
+resumed = { title = "▶️ 再生再開", text = "再生を再開しました。", color = "green" }
+skipped = { title = "⏭️ 曲をスキップしました。", color = "green" }
+left = { title = "👋 退出しました。またね！", color = "green" }
+auto_left = { title = "👋 聴者がいなくなったため再生を停止します", text = "ボイスチャンネルから退出しました。", color = "yellow" }
+moved = { title = "🚚 チャンネル移動", text = "**{channel}** に移動しました。", color = "blue" }
+volume = { title = "🔊 再生音量を {percent}% に設定しました。", color = "green" }
+loop_on = { title = "🔁 ループ再生を 有効 にしました。", color = "green" }
+loop_off = { title = "🔁 ループ再生を 無効 にしました。", color = "green" }
+rejoined = { title = "✅ 再接続しました", text = "ボイスチャンネルに再接続しました。キューの続きから再生します。", color = "green" }
+kicked = { title = "👋 切断されました", text = "ボイスチャンネルから切断されたため、キューを削除しました。", color = "yellow" }
+
+[queue]
+cleared = { title = "🗑️ キュー削除", text = "**{count}** 曲をキューから削除しました。", color = "green" }
+shuffled = { title = "🔀 キューをシャッフルしました。", color = "green" }
+
+[setting]
+admin_added = { title = "✅ 権限追加", text = "{user} にBot操作権限を付与しました。", color = "green" }
+admin_already = { title = "⚠️ 通知", text = "{user} はすでに Bot の管理者です。", color = "yellow" }
+admin_removed = { title = "✅ 権限剥奪", text = "{user} のBot操作権限を剥奪しました。", color = "green" }
+admin_missing = { title = "⚠️ 通知", text = "{user} は Bot の管理者ではありません。", color = "yellow" }
+queue_limit = { title = "✅ 設定更新", text = "キューの最大曲数を **{value}** 曲に設定しました。", color = "green" }
+playlist_limit = { title = "✅ 設定更新", text = "プレイリストの取得上限を **{value}** 曲に設定しました。", color = "green" }
+autoleave = { title = "✅ 設定更新", text = "聴者がいなくなってから **{secs}** 秒後に自動で退出するように設定しました。", color = "green" }
+autoleave_off = { title = "✅ 設定更新", text = "聴者がいなくなっても自動で退出しないように設定しました。", color = "green" }
+lang = { title = "✅ 設定更新", text = "Bot の言語を **日本語** に設定しました。", color = "green" }
+
+[ui]
+field_title = "タイトル"
+field_duration = "再生時間"
+field_waiting_name = "待機数"
+field_waiting = "{count} 曲"
+field_playlist_name = "プレイリスト名"
+field_added = "追加曲数"
+field_added_value = "{count} 曲"
+field_rejected = "追加できなかった曲"
+field_rejected_value = "{count} 曲（キューの上限）"
+field_requester = "リクエスト"
+footer_requester = "Requested by: {name}"
+card_failed = "{title}\n(詳細情報の表示に失敗しました)"
+unknown_title = "Unknown Title"
+admin_field = "🔧 管理者向け"
+queue_title = "📝 キューリスト ({page}/{total}ページ)"
+history_title = "🕘 再生履歴 ({page}/{total}ページ)"
+
+[help]
+title_1 = "📖 コマンドヘルプ #1 (再生・基本操作)"
+title_2 = "📖 コマンドヘルプ #2 (キュー・音量・履歴)"
+title_3 = "📖 コマンドヘルプ #3 (BOT管理・設定)"
+mention = { text = "助けが必要ですか？\n必要な場合は、`{prefix}help` コマンドを実行してください。", color = "green" }
+usage_p = "使い方: `{prefix}p <URL・曲名>`\n例: `{prefix}p https://www.youtube.com/watch?v=dQw4w9WgXcQ`、`{prefix}p 曲名`"
+usage_pnow = "使い方: `{prefix}pnow <番号>`\n例: `{prefix}pnow 3` (キューの 3 番目の曲を今すぐ再生します)"
+usage_clear = "使い方: `{prefix}clear [開始] [終了]`\n例: `{prefix}clear` (全件)、`{prefix}clear 5` (先頭の 5 件)、`{prefix}clear 3 8` (3 番目から 8 番目)"
+usage_vol = "使い方: `{prefix}vol <1-200>`\n例: `{prefix}vol 50`"
+usage_setting = "使い方:\n`{prefix}setting admin add <メンバー>` / `{prefix}setting admin remove <メンバー>`\n`{prefix}setting limit queue <値>` / `{prefix}setting limit playlist <値>`\n`{prefix}setting autoleave <秒>`\n`{prefix}setting lang <ja/en>`"
+
+[[help.page_1]]
+name = "{prefix}help"
+value = "このヘルプ画面を表示します。"
+
+[[help.page_1]]
+name = "{prefix}p [URL・タイトル]"
+value = "音楽を再生します（YouTube の動画・プレイリストの URL と、曲名の検索に対応）。"
+
+[[help.page_1]]
+name = "{prefix}pause"
+value = "再生中の曲を一時停止します。"
+
+[[help.page_1]]
+name = "{prefix}resume"
+value = "一時停止中の曲の再生を再開します。"
+
+[[help.page_1]]
+name = "{prefix}replay"
+value = "現在再生中の曲を最初から再生し直します。"
+
+[[help.page_1]]
+name = "{prefix}skip"
+value = "再生中の曲をスキップします。"
+
+[[help.page_2]]
+name = "{prefix}qlist"
+value = "現在のキューに入っている曲のリストを表示します。"
+
+[[help.page_2]]
+name = "{prefix}history"
+value = "再生履歴を表示します。"
+
+[[help.page_2]]
+name = "{prefix}pnow [番号]"
+value = "キューの指定した曲を今すぐ再生します。再生中の曲は次の曲として最初から再生し直します。"
+
+[[help.page_2]]
+name = "{prefix}clear [開始] [終了]"
+value = "キューの曲を削除します。引数なしで全件削除、範囲指定も可能です。"
+
+[[help.page_2]]
+name = "{prefix}loop"
+value = "キューのループ再生を切り替えます。"
+
+[[help.page_2]]
+name = "{prefix}sh"
+value = "キューの中身をシャッフルします。"
+
+[[help.page_2]]
+name = "{prefix}vol [1-200]"
+value = "再生音量を変更し、設定を保存します。"
+
+[[help.page_3]]
+name = "{prefix}move"
+value = "BOTを自分のいるボイスチャンネルへ移動させます。"
+
+[[help.page_3]]
+name = "{prefix}rejoin"
+value = "BOTを退出させて再参加させ、続きから再生します。"
+
+[[help.page_3]]
+name = "{prefix}leave"
+value = "BOTをボイスチャンネルから退出させ、キューをクリアします。"
+
+[[help.page_3]]
+name = "{prefix}setting admin [add/remove] [メンバー]"
+value = "BOT操作権限の付与・剥奪を行います。"
+
+[[help.page_3]]
+name = "{prefix}setting limit [queue/playlist] [値]"
+value = "上限(キュー・プレイリスト)の設定を行います。(キュー 1〜{queue_max}、プレイリスト 1〜{playlist_max})"
+
+[[help.page_3]]
+name = "{prefix}setting autoleave [0-{autoleave_max}]"
+value = "聴者がいなくなってから自動で退出するまでの秒数を設定します（0で自動退出しない）。"
+
+[[help.page_3]]
+name = "{prefix}setting lang [ja/en]"
+value = "Bot の表示言語を切り替えます（ja: 日本語、en: English）。"

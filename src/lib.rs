@@ -1,0 +1,19 @@
+//! WataPachiBOT のライブラリ入口。統合テストから各モジュールを参照するために公開する。
+
+pub mod app;
+pub mod audio;
+pub mod commands;
+pub mod config;
+pub mod db;
+pub mod domain;
+pub mod error;
+pub mod gateway;
+pub mod guild;
+pub mod lang;
+pub mod logging;
+pub mod messages;
+pub mod platform;
+pub mod resolver;
+pub mod scheduler;
+pub mod ui;
+pub mod update;

@@ -1,0 +1,134 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+	<!--
+		WataPachiBOT icon
+		- Motif: cotton candy (wata) + popping candy (pachi pachi), purple main color
+		- Discord crops avatars to a circle; key shapes stay inside r=230 from the center
+	-->
+	<defs>
+		<radialGradient id="bg" cx="256" cy="210" r="330" gradientUnits="userSpaceOnUse">
+			<stop offset="0" stop-color="#9d5cf0"/>
+			<stop offset="0.55" stop-color="#5b21b6"/>
+			<stop offset="1" stop-color="#2e1065"/>
+		</radialGradient>
+		<linearGradient id="cloud" x1="0" y1="92" x2="0" y2="315" gradientUnits="userSpaceOnUse">
+			<stop offset="0" stop-color="#fbf4ff"/>
+			<stop offset="0.45" stop-color="#e2c4ff"/>
+			<stop offset="1" stop-color="#b57af5"/>
+		</linearGradient>
+		<linearGradient id="stick" x1="0" y1="0" x2="1" y2="0">
+			<stop offset="0" stop-color="#fff7e6"/>
+			<stop offset="1" stop-color="#e8d3b5"/>
+		</linearGradient>
+		<filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+			<feGaussianBlur stdDeviation="22"/>
+		</filter>
+	</defs>
+
+	<!-- background -->
+	<rect width="512" height="512" fill="url(#bg)"/>
+	<g fill="#ffffff">
+		<circle cx="88" cy="96" r="3" opacity="0.5"/>
+		<circle cx="430" cy="92" r="2.5" opacity="0.45"/>
+		<circle cx="70" cy="300" r="2.5" opacity="0.4"/>
+		<circle cx="450" cy="300" r="3" opacity="0.4"/>
+		<circle cx="200" cy="470" r="2.5" opacity="0.35"/>
+		<circle cx="330" cy="460" r="3" opacity="0.35"/>
+	</g>
+
+	<!-- soft glow behind the cotton candy -->
+	<circle cx="256" cy="215" r="150" fill="#f0d9ff" opacity="0.35" filter="url(#glow)"/>
+
+	<!-- stick -->
+	<rect x="245" y="270" width="22" height="178" rx="11" fill="#2a0b52"/>
+	<rect x="249" y="274" width="14" height="170" rx="7" fill="url(#stick)"/>
+
+	<!-- cotton candy: outline layer (same circles, thick stroke) then fill layer -->
+	<g fill="#2a0b52" stroke="#2a0b52" stroke-width="16">
+		<circle cx="256" cy="168" r="76"/>
+		<circle cx="186" cy="200" r="62"/>
+		<circle cx="326" cy="200" r="62"/>
+		<circle cx="150" cy="246" r="44"/>
+		<circle cx="362" cy="246" r="44"/>
+		<circle cx="212" cy="258" r="56"/>
+		<circle cx="300" cy="258" r="56"/>
+		<circle cx="256" cy="244" r="66"/>
+	</g>
+	<g fill="url(#cloud)">
+		<circle cx="256" cy="168" r="76"/>
+		<circle cx="186" cy="200" r="62"/>
+		<circle cx="326" cy="200" r="62"/>
+		<circle cx="150" cy="246" r="44"/>
+		<circle cx="362" cy="246" r="44"/>
+		<circle cx="212" cy="258" r="56"/>
+		<circle cx="300" cy="258" r="56"/>
+		<circle cx="256" cy="244" r="66"/>
+	</g>
+
+	<!-- fluffy inner curls -->
+	<g fill="none" stroke="#a45ff0" stroke-width="6" stroke-linecap="round" opacity="0.55">
+		<path d="M168 268 q18 14 38 4"/>
+		<path d="M300 280 q20 10 40 -6"/>
+		<path d="M232 300 q24 10 48 0"/>
+		<path d="M150 222 q-14 10 -12 26"/>
+		<path d="M372 222 q14 10 12 26"/>
+	</g>
+
+	<!-- highlights -->
+	<g fill="#ffffff">
+		<ellipse cx="226" cy="128" rx="26" ry="15" transform="rotate(-28 226 128)" opacity="0.85"/>
+		<ellipse cx="160" cy="180" rx="15" ry="9" transform="rotate(-35 160 180)" opacity="0.75"/>
+		<ellipse cx="306" cy="168" rx="12" ry="7" transform="rotate(-25 306 168)" opacity="0.6"/>
+		<circle cx="258" cy="116" r="5" opacity="0.8"/>
+	</g>
+
+	<!-- popping candy crystals stuck on the cotton candy -->
+	<g stroke="#2a0b52" stroke-width="3" stroke-linejoin="round">
+		<polygon points="196,214 214,206 220,224 202,230" fill="#ff5fc8"/>
+		<polygon points="290,140 307,146 302,162 287,157" fill="#ffd84d"/>
+		<polygon points="246,232 264,228 268,246 250,250" fill="#5ee7ff"/>
+		<polygon points="330,226 346,222 348,238 334,242" fill="#ff5fc8"/>
+		<polygon points="168,258 182,252 188,266 174,272" fill="#ffd84d"/>
+		<polygon points="268,180 280,176 284,188 272,192" fill="#5ee7ff"/>
+		<polygon points="220,160 232,158 234,170 222,172" fill="#ffd84d"/>
+		<polygon points="294,282 308,280 310,294 296,296" fill="#5ee7ff"/>
+	</g>
+
+	<!-- flying crystals -->
+	<g stroke="#2a0b52" stroke-width="3" stroke-linejoin="round">
+		<polygon points="420,262 436,256 440,272 424,278" fill="#ffd84d"/>
+		<polygon points="78,270 92,262 98,278 84,284" fill="#5ee7ff"/>
+		<polygon points="238,52 252,48 256,62 242,66" fill="#ff5fc8"/>
+		<polygon points="336,72 348,70 350,82 338,84" fill="#5ee7ff"/>
+	</g>
+
+	<!-- pachi pachi bursts -->
+	<g fill="none" stroke-width="7" stroke-linecap="round">
+		<g stroke="#ffd84d">
+			<line x1="424" y1="186" x2="446" y2="174"/>
+			<line x1="428" y1="206" x2="454" y2="208"/>
+			<line x1="418" y1="166" x2="428" y2="146"/>
+		</g>
+		<g stroke="#ff7ad6">
+			<line x1="88" y1="190" x2="64" y2="180"/>
+			<line x1="86" y1="210" x2="60" y2="214"/>
+			<line x1="96" y1="170" x2="84" y2="150"/>
+		</g>
+	</g>
+
+	<!-- sparkles -->
+	<g stroke="#2a0b52" stroke-width="3" stroke-linejoin="round">
+		<path d="M392 104 Q392 130 418 130 Q392 130 392 156 Q392 130 366 130 Q392 130 392 104 Z" fill="#ffd84d"/>
+		<path d="M118 108 Q118 128 138 128 Q118 128 118 148 Q118 128 98 128 Q118 128 118 108 Z" fill="#ff8ae0"/>
+		<path d="M438 312 Q438 330 456 330 Q438 330 438 348 Q438 330 420 330 Q438 330 438 312 Z" fill="#7cf0ff"/>
+		<path d="M126 336 Q126 350 140 350 Q126 350 126 364 Q126 350 112 350 Q126 350 126 336 Z" fill="#ffffff"/>
+	</g>
+
+	<!-- music note (it is a music bot) -->
+	<g fill="#ffd84d" stroke="#2a0b52" stroke-width="4" stroke-linejoin="round">
+		<rect x="342" y="362" width="9" height="58" rx="2"/>
+		<rect x="382" y="352" width="9" height="58" rx="2"/>
+		<polygon points="342,362 391,352 391,368 342,378"/>
+		<ellipse cx="335" cy="420" rx="16" ry="12" transform="rotate(-20 335 420)"/>
+		<ellipse cx="375" cy="410" rx="16" ry="12" transform="rotate(-20 375 410)"/>
+	</g>
+</svg>

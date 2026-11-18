@@ -1,0 +1,24 @@
+# ビルドの成果物と実行ファイルの置き場
+/target/
+/bin/
+
+# トークンと手元の設定 (.env.example だけを管理する)
+/.env
+/.env.*
+!/.env.example
+/config.toml
+
+# 実行時に作られるもの
+/data/
+/logs/
+/worker/envs/
+
+# Python
+__pycache__/
+.venv/
+.pytest_cache/
+.ruff_cache/
+.cache/
+
+*.log
+*.err

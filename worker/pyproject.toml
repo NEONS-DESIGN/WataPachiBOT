@@ -1,0 +1,20 @@
+[project]
+name = "watapachi-worker"
+version = "0.1.0"
+description = "yt-dlp 常駐ワーカー"
+requires-python = ">=3.11"
+# yt-dlp は更新運用で日付ごとの別の venv (worker/envs) に入れ、入れ替えられるようにするため、ここには含めない
+dependencies = []
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+markers = ["network: ネットワークを使う試験"]
+# 既定ではネットワークを使う試験を除く。実行するときはコマンドラインで -m network を付ける (後の指定が優先される)
+addopts = ["-m", "not network"]
+
+[tool.uv]
+package = false
