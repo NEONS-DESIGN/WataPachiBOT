@@ -8,7 +8,7 @@
   <a href="https://github.com/serenity-rs/songbird"><img src="https://img.shields.io/badge/Songbird-v0.6-3498db" alt="Songbird"></a>
   <a href="https://github.com/yt-dlp/yt-dlp"><img src="https://img.shields.io/badge/yt--dlp-latest-FF0000" alt="yt-dlp"></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-v3.14-ffde57" alt="Python"></a>
-  <a href="https://www.microsoft.com/windows/"><img src="https://img.shields.io/badge/Windows-11-0078D6" alt="Windows 11"></a>
+  <a href="https://deno.com/"><img src="https://img.shields.io/badge/Deno-v2.9-70ffaf" alt="Deno"></a>
 </p>
 
 > [!NOTE]
