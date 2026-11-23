@@ -22,7 +22,6 @@ import contextlib
 import functools
 import json
 import os
-import queue
 import re
 import sys
 import threading
@@ -36,6 +35,7 @@ import speedups
 # 予備設定の記憶と失敗の型は別のモジュールに置く。従来どおり worker からも参照できるようにする
 from fallback import FallbackFailedError, FallbackMemory
 from protocol import UnsupportedUrlError, classify_error, cookie_failure, is_bot_check, validate_url
+from runner import BoundedRunner
 
 # 既定の形式。opus を優先し、無ければ音声のみ、それも無ければ最良
 DEFAULT_FORMAT = "bestaudio[acodec=opus]/bestaudio/best"
@@ -302,149 +302,19 @@ def build_options(cachedir: str, cookies: str | None, user_agent: str | None) ->
 	return options
 
 
-class FallbackTimeoutError(Exception):
+def make_runner(name: str) -> BoundedRunner:
 	"""
-	予備設定の取得が持ち時間の残りを超えた。取得は裏で続くが、結果は使わない。
+	予備設定の実行スレッドを作る。放置の後は、実行スレッドの持つインスタンスの接続を張り直す。
+	- 放置の判定は _now で行う (試験で時計を差し替えられるよう、呼ぶたびに引く)
 
+	Args:
+		name: 実行スレッドの名前
+	Returns:
+		作った BoundedRunner (スレッドは最初の run で作られる)
 	Example:
-		raise FallbackTimeoutError(3.0)
+		runner = make_runner(FALLBACK_THREAD_NAME)
 	"""
-
-	def __init__(self, limit: float) -> None:
-		"""Args: limit は待った秒数。Example: FallbackTimeoutError(3.0)"""
-		super().__init__(f"fallback timed out after {limit:.1f}s")
-		self.limit = limit
-
-
-class _FallbackJob:
-	"""
-	BoundedRunner へ渡す 1 件の処理と、その結果。BoundedRunner.run だけが作る。
-
-	呼び出し例:
-		job = _FallbackJob(action, request_budget.deadline())
-	"""
-
-	def __init__(self, action: Callable[[dict[str | None, Any]], Any], deadline: float | None) -> None:
-		"""
-		Args:
-			action: 実行スレッドの持つインスタンスの辞書を受け取る処理
-			deadline: 依頼元の要求の期限 (time.monotonic の値)。None なら期限なし
-		Example:
-			_FallbackJob(lambda cache: 1, None)
-		"""
-		self.action = action
-		self.deadline = deadline
-		self.done = threading.Event()
-		self.result: Any = None
-		self.error: BaseException | None = None
-
-
-class BoundedRunner:
-	"""
-	処理を専用のデーモンスレッドで 1 件ずつ実行し、待ちを上限秒数で打ち切る。予備設定の取得に使う。
-	- 処理には、実行スレッドだけが持つ辞書を渡す。YoutubeDL はその中に作り、スレッド間で共有しない
-	- 打ち切ったら、そのスレッドと辞書 (中のインスタンス) を捨てる。次の実行で新しいスレッドを作る。
-		yt-dlp の処理は外から止められないため、捨てたスレッドは処理を終えてから自分で終わる。結果は使わない
-	- 処理の期限は run を呼んだときの request_budget の期限で、実行スレッドは処理の間それを使い続ける。
-		打ち切られたスレッドは期限を過ぎているため、常駐 Deno などの待ちに入らない
-	- 呼び出しは 1 スレッド (メインループ) からに限る
-
-	呼び出し例:
-		runner = BoundedRunner("stream-fallback")
-		info = runner.run(lambda cache: make(cache).extract_info(url, download=False), 3.0)
-	"""
-
-	def __init__(self, name: str) -> None:
-		"""Args: name は実行スレッドの名前。スレッドは最初の run で作る。Example: BoundedRunner("stream-fallback")"""
-		self._name = name
-		self._tasks: queue.Queue[_FallbackJob | None] | None = None
-
-	@staticmethod
-	def _loop(tasks: queue.Queue[_FallbackJob | None], state: dict[str | None, Any]) -> None:
-		"""
-		実行スレッドの本体。None を受け取るまで処理を順に実行する。
-
-		Args:
-			tasks: 処理の待ち行列
-			state: このスレッドだけが持つ辞書
-		Example:
-			threading.Thread(target=BoundedRunner._loop, args=(queue.Queue(), {}), daemon=True).start()
-		"""
-		last_used: float | None = None
-		while True:
-			job = tasks.get()
-			if job is None:
-				return
-			# このスレッドのインスタンスの接続も、放置の後は張り直す (インスタンスはこのスレッドだけが使う)
-			if last_used is not None and _now() - last_used >= IDLE_RESET_SECONDS:
-				reset_connections(list(state.values()))
-			# 依頼元の要求の期限で固定する。メインループが次の要求で期限を変えても、このスレッドには届かない
-			request_budget.adopt(job.deadline)
-			try:
-				job.result = job.action(state)
-			except BaseException as error:  # 呼び出し側へ渡して送出させる。ここで握りつぶさない
-				job.error = error
-			finally:
-				request_budget.adopt(None)
-				last_used = _now()
-				job.done.set()
-
-	def run(self, action: Callable[[dict[str | None, Any]], Any], limit: float | None) -> Any:
-		"""
-		処理を実行スレッドで実行し、結果を返す。
-
-		Args:
-			action: 実行スレッドの辞書を受け取る処理
-			limit: 待つ上限秒数。None なら終わるまで待つ
-		Returns:
-			action の戻り値
-		Raises:
-			FallbackTimeoutError: limit 秒以内に終わらなかった場合 (実行スレッドは捨てる)
-			Exception: action が送出した例外
-		Example:
-			runner.run(lambda cache: 1, 1.0) -> 1
-		"""
-		tasks = self._queue()
-		job = _FallbackJob(action, request_budget.deadline())
-		tasks.put(job)
-		if not job.done.wait(limit):
-			# 今の処理を終えたら終わるよう伝え、このスレッドとインスタンスを二度と使わない
-			tasks.put(None)
-			self._tasks = None
-			raise FallbackTimeoutError(limit if limit is not None else 0.0)
-		if job.error is not None:
-			raise job.error
-		return job.result
-
-	def submit(self, action: Callable[[dict[str | None, Any]], Any]) -> None:
-		"""
-		処理を実行スレッドへ投げ、終わりを待たずに戻る。起動時の準備に使う。
-		- 期限なしで実行する。結果と例外は捨てるため、失敗は action の中で記録すること
-		- 後から run で投げた処理は、この処理の後に実行される (run の待ちの上限にはこの処理の残りも含まれる)
-
-		Args:
-			action: 実行スレッドの辞書を受け取る処理
-		Returns:
-			なし
-		Example:
-			runner.submit(lambda cache: cache.setdefault(None, make()))
-		"""
-		self._queue().put(_FallbackJob(action, None))
-
-	def _queue(self) -> queue.Queue[_FallbackJob | None]:
-		"""
-		実行スレッドの待ち行列を返す。スレッドが無ければ (初回、打ち切りの後) 作って開始する。
-
-		Returns:
-			処理の待ち行列
-		Example:
-			self._queue().put(job)
-		"""
-		if self._tasks is None:
-			self._tasks = queue.Queue()
-			thread = threading.Thread(target=self._loop, args=(self._tasks, {}), name=self._name, daemon=True)
-			thread.start()
-		return self._tasks
+	return BoundedRunner(name, on_idle=reset_connections, idle_seconds=IDLE_RESET_SECONDS, clock=lambda: _now())
 
 
 def selected_available_at(info: dict[str, Any]) -> int | None:
@@ -641,7 +511,7 @@ class Worker:
 		# 主経路を飛ばして予備設定へ直接回す動画。期限の判定は _now で行う (試験で時計を差し替えられるよう、呼ぶたびに引く)
 		self._fallback_memory = FallbackMemory(FALLBACK_MEMORY_SIZE, clock=lambda: _now())
 		# 予備設定のインスタンスは実行スレッドの中で作り、そのスレッドの辞書に形式ごとに持つ
-		self._fallback_runner = BoundedRunner(FALLBACK_THREAD_NAME)
+		self._fallback_runner = make_runner(FALLBACK_THREAD_NAME)
 		self._fallback_base: dict[str, Any] | None = None
 		try:
 			fallback_base = speedups.fallback_options(self._stream_base)
@@ -656,7 +526,7 @@ class Worker:
 			self._cookieless_base = {
 				key: value for key, value in self._fallback_base.items() if key not in COOKIE_OPTION_KEYS
 			}
-		self._cookieless_runner = BoundedRunner(COOKIELESS_THREAD_NAME)
+		self._cookieless_runner = make_runner(COOKIELESS_THREAD_NAME)
 		# Cookie の読み込みの失敗の型。古い yt-dlp に無ければ、その失敗は Cookie 関連として扱わない
 		try:
 			from yt_dlp.cookies import CookieLoadError

@@ -1,7 +1,7 @@
 """
 予備設定 (解決の失敗後に 1 回だけ使う設定) の記憶と失敗の型。
 - yt-dlp にも他のワーカーのモジュールにも依存しない (import しても起動を遅らせない)
-- 予備設定の実行スレッド (BoundedRunner) と放置の管理は、時計の差し替えを含めて worker.py に置く
+- 予備設定の実行スレッド (BoundedRunner) は runner.py、放置の管理と時計の差し替えは worker.py に置く
 
 呼び出し例:
 	memory = FallbackMemory(256)

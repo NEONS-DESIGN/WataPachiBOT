@@ -14,13 +14,13 @@ use watapachi_bot::commands::{ParseError, ParsedCommand};
 use watapachi_bot::config::LimitsConfig;
 use watapachi_bot::domain::{ChannelId, GuildId, MessageId, UserId};
 use watapachi_bot::gateway::cache_view::count_listeners;
-use watapachi_bot::gateway::dispatcher::{
-	is_timed_out, page_build_budget, route, setting_access, snowflake_unix_ms, unix_secs,
-	IncomingMessage, Route, SettingAccess, MAX_TRUSTED_EVENT_DELAY, PAGE_BUILD_LIMIT,
-};
 use watapachi_bot::gateway::notifier::is_content_rejection;
 use watapachi_bot::gateway::page_timers::{Due, PageTimers, Settled};
 use watapachi_bot::gateway::ready::ReadyGate;
+use watapachi_bot::gateway::route::{
+	is_timed_out, page_build_budget, route, setting_access, snowflake_unix_ms, unix_secs,
+	IncomingMessage, Route, SettingAccess, MAX_TRUSTED_EVENT_DELAY, PAGE_BUILD_LIMIT,
+};
 use watapachi_bot::guild::message::GuildCommand;
 use watapachi_bot::guild::notifier::MessageRef;
 
