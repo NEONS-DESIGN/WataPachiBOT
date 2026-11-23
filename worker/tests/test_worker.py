@@ -7,12 +7,16 @@ import json
 import os
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import pytest
 
-from protocol import ERROR_CODES, OPS, classify_error, is_bot_check, validate_url, UnsupportedUrlError
-from worker import DEFAULT_PLAYLIST_LIMIT, first_mix_video_id, mix_playlist_id
+from protocol import (
+	COOKIE_FAILURE_INVALID, COOKIE_FAILURE_JS_CHALLENGE, ERROR_CODES, OPS, UnsupportedUrlError, classify_error,
+	cookie_failure, is_bot_check, validate_url,
+)
+from worker import DEFAULT_PLAYLIST_LIMIT, StderrLogger, first_mix_video_id, mix_playlist_id
 
 ROOT = Path(__file__).resolve().parent.parent
 STUB = Path(__file__).resolve().parent / "stub"
@@ -221,6 +225,51 @@ def test_is_bot_check(message, expected):
 	assert is_bot_check(message) is expected
 	if expected:
 		assert classify_error(message) == "rate_limited"
+
+
+JS_WARNING = "[youtube] abcdefghijk: n challenge solving failed: Some formats may be missing."
+SIG_WARNING = "[youtube] abcdefghijk: Signature solving failed: Some formats may be missing."
+COOKIES_WARNING = "[youtube] The provided YouTube account cookies are no longer valid. They have likely been rotated"
+FORMAT_ERROR = "ERROR: [youtube] abcdefghijk: Requested format is not available. Use --list-formats"
+
+
+@pytest.mark.parametrize(
+	"warnings,message,expected",
+	[
+		# 解読に失敗して音声の形式が取れなかった
+		([JS_WARNING], FORMAT_ERROR, COOKIE_FAILURE_JS_CHALLENGE),
+		([SIG_WARNING], FORMAT_ERROR, COOKIE_FAILURE_JS_CHALLENGE),
+		# 解読の警告があっても、失敗の理由が形式でなければ Cookie 関連としない
+		([JS_WARNING], "ERROR: Private video", None),
+		# 解読の警告が無い形式の失敗 (形式の固定の取り直しなど) は Cookie 関連としない
+		([], FORMAT_ERROR, None),
+		# Cookie の失効の警告があれば、失敗の理由によらず Cookie 関連とする
+		([COOKIES_WARNING], "Sign in to confirm your age", COOKIE_FAILURE_INVALID),
+		([COOKIES_WARNING], "Sign in to confirm you're not a bot", COOKIE_FAILURE_INVALID),
+		# ただし単なる回数制限では要求を増やさない
+		([COOKIES_WARNING], "HTTP Error 429: Too Many Requests", None),
+		# 正常なときにも出る警告は判定に使わない
+		(["Unable to fetch GVS PO Token for web_music client: Missing required Data Sync ID"], FORMAT_ERROR, None),
+	],
+)
+def test_cookie_failure(warnings, message, expected):
+	assert cookie_failure(warnings, message) == expected
+
+
+def test_logger_records_warnings_of_the_current_thread(capsys):
+	logger = StderrLogger()
+	with logger.recording() as warnings:
+		logger.warning("a")
+		# 打ち切られた予備設定のスレッドなど、別のスレッドの警告は記録しない
+		other = threading.Thread(target=logger.warning, args=("b",))
+		other.start()
+		other.join()
+		logger.info("i")
+	logger.warning("c")
+	assert warnings == ["a"]
+	# 標準エラーへの出力は記録の有無によらず続ける
+	err = capsys.readouterr().err
+	assert "[warning] a" in err and "[warning] b" in err and "[warning] c" in err
 
 
 def test_protocol_constants_match_protocol_json():

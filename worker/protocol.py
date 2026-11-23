@@ -4,6 +4,7 @@
 - ワーカー本体 (worker.py) と試験から読み込む
 """
 import re
+from collections.abc import Sequence
 from urllib.parse import urlparse
 
 # 操作名。protocol.json の ops と同じ順序にする
@@ -70,6 +71,46 @@ def is_bot_check(message: str) -> bool:
 		is_bot_check("Sign in to confirm you're not a bot") -> True
 	"""
 	return classify_error(message) == "rate_limited" and re.search(BOT_CHECK_PATTERN, message.lower()) is not None
+
+
+# Cookie 関連の失敗の理由の名前 (標準エラーの記録に使う)
+COOKIE_FAILURE_JS_CHALLENGE = "js_challenge"
+COOKIE_FAILURE_INVALID = "cookies_invalid"
+# JS チャレンジ (n / sig) の解読に失敗したときの yt-dlp の警告。Cookie のアカウントに配られたプレイヤーを
+# 解読できないと出る (Cookie なしでは別のプレイヤーが配られ、解読できることがある)
+JS_CHALLENGE_FAILURE_PATTERN = r"n challenge solving failed|signature solving failed"
+# 解読に失敗して音声の形式が残らなかったときの yt-dlp のエラー
+FORMAT_UNAVAILABLE_PATTERN = r"requested format is not available"
+# Cookie の失効 (ブラウザでの入れ替え) を知らせる yt-dlp の警告
+COOKIES_INVALID_PATTERN = r"account cookies are no longer valid"
+
+
+def cookie_failure(warnings: Sequence[str], message: str) -> str | None:
+	"""
+	Cookie を使った取得の失敗が、Cookie が原因のものかを判定する。
+	- 解読の失敗の警告があり、エラーが形式の不足なら COOKIE_FAILURE_JS_CHALLENGE
+	- Cookie の失効の警告があれば COOKIE_FAILURE_INVALID。ただし単なる回数制限 (ボット判定でない rate_limited) は除く
+	- Cookie を使っているかは呼び出し側で確かめること
+
+	Args:
+		warnings: その取得の間に yt-dlp が出した警告
+		message: yt-dlp の例外メッセージ
+	Returns:
+		Cookie 関連なら理由の名前、違えば None
+	Raises:
+		なし
+	Example:
+		cookie_failure(["n challenge solving failed"], "Requested format is not available") -> "js_challenge"
+	"""
+	lowered = [warning.lower() for warning in warnings]
+	reason = message.lower()
+	if re.search(FORMAT_UNAVAILABLE_PATTERN, reason) and any(re.search(JS_CHALLENGE_FAILURE_PATTERN, w) for w in lowered):
+		return COOKIE_FAILURE_JS_CHALLENGE
+	if any(re.search(COOKIES_INVALID_PATTERN, w) for w in lowered):
+		if classify_error(message) == "rate_limited" and not is_bot_check(message):
+			return None
+		return COOKIE_FAILURE_INVALID
+	return None
 
 
 # ワーカーが受け付ける URL のホスト。完全一致のみ (部分一致は youtube.com.evil.example を通すため使わない)

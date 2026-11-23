@@ -36,6 +36,10 @@ class FakeDownloadError(Exception):
 	"""yt_dlp.utils.DownloadError の代用"""
 
 
+class FakeCookieLoadError(Exception):
+	"""yt_dlp.cookies.CookieLoadError の代用"""
+
+
 class FakeImpersonateTarget:
 	"""yt_dlp.networking.impersonate.ImpersonateTarget の代用。from_str の引数を保持する"""
 
@@ -125,6 +129,7 @@ def install_fake_yt_dlp(monkeypatch: pytest.MonkeyPatch, *, internals: bool = Tr
 		"yt_dlp.extractor.youtube.jsc._builtin.ejs": {"EJSBaseJCP": EJSBaseJCP},
 		"yt_dlp.networking": {"Request": FakeRequest},
 		"yt_dlp.networking.impersonate": {"ImpersonateTarget": FakeImpersonateTarget},
+		"yt_dlp.cookies": {"CookieLoadError": FakeCookieLoadError},
 	}
 	for name, attributes in modules.items():
 		module = types.ModuleType(name)
@@ -399,6 +404,201 @@ def test_private_with_cookies_skips_fallback(monkeypatch, deno_on_path):
 	with pytest.raises(FakeDownloadError):
 		worker.resolve("https://www.youtube.com/watch?v=x", None)
 	assert len(fake.calls) == 1
+
+
+VIDEO_INFO = {"id": "vid", "title": "title", "url": "https://example.invalid/a?expire=1", "format_id": "251"}
+JS_CHALLENGE_WARNING = "[youtube] x: n challenge solving failed: Some formats may be missing."
+COOKIES_INVALID_WARNING = "[youtube] The provided YouTube account cookies are no longer valid."
+FORMAT_UNAVAILABLE = "ERROR: [youtube] x: Requested format is not available. Use --list-formats"
+
+
+def install_cookie_failure(
+	monkeypatch: pytest.MonkeyPatch, warning: str | None, error: Exception, cookieless_error: Exception | None = None,
+) -> types.SimpleNamespace:
+	"""
+	Cookie ありの取得は warning を出して error を送出し、Cookie なしの取得は成功する偽の yt_dlp を置く。
+
+	Args:
+		monkeypatch: pytest の monkeypatch
+		warning: Cookie ありの取得で logger へ出す警告。None なら出さない
+		error: Cookie ありの取得が送出する例外
+		cookieless_error: Cookie なしの取得が送出する例外。None なら成功する
+	Returns:
+		install_fake_yt_dlp の戻り値 (calls に取得ごとの params が入る)
+	"""
+	fake = install_fake_yt_dlp(monkeypatch)
+
+	def extract(self: Any, url: str, download: bool = False) -> dict[str, Any]:
+		"""Returns: Cookie なしなら固定の動画情報。Raises: Cookie ありなら error"""
+		fake.calls.append(self.params)
+		if "cookiesfrombrowser" in self.params:
+			if warning is not None:
+				self.params["logger"].warning(warning)
+			raise error
+		if cookieless_error is not None:
+			raise cookieless_error
+		return dict(VIDEO_INFO)
+
+	monkeypatch.setattr(fake.YoutubeDL, "extract_info", extract)
+	return fake
+
+
+@pytest.mark.parametrize(
+	"warning,error",
+	[
+		# プレイヤーを解読できず、音声の形式が残らなかった
+		(JS_CHALLENGE_WARNING, FakeDownloadError(FORMAT_UNAVAILABLE)),
+		# Cookie が失効していた
+		(COOKIES_INVALID_WARNING, FakeDownloadError("Sign in to confirm your age")),
+		# Firefox の Cookie を読み込めなかった
+		(None, FakeCookieLoadError("failed to load cookies")),
+	],
+)
+def test_cookie_failure_retries_without_cookies(monkeypatch, deno_on_path, capsys, warning, error):
+	"""Cookie 関連の失敗では、Cookie を外した予備設定で 1 回だけ取り直す"""
+	fake = install_cookie_failure(monkeypatch, warning, error)
+	from worker import Worker, build_options
+
+	worker = Worker(build_options("cache", "firefox", None))
+	result = worker.resolve("https://www.youtube.com/watch?v=x", None)
+	assert result["id"] == "vid"
+	assert result["fallback"] is True
+	first, second = fake.calls
+	assert first["cookiesfrombrowser"] == ("firefox",)
+	assert "cookiesfrombrowser" not in second
+	assert "impersonate" in second
+	err = capsys.readouterr().err
+	assert "cookieless: https://www.youtube.com/watch?v=x" in err
+	assert "cookieless succeeded: https://www.youtube.com/watch?v=x" in err
+
+
+def test_cookie_failure_is_retried_with_the_same_format(monkeypatch, deno_on_path):
+	"""形式を固定した解決でも、同じ形式で Cookie なしの取り直しをする"""
+	fake = install_cookie_failure(monkeypatch, JS_CHALLENGE_WARNING, FakeDownloadError(FORMAT_UNAVAILABLE))
+	from worker import Worker, build_options
+
+	worker = Worker(build_options("cache", "firefox", None))
+	worker.resolve("https://www.youtube.com/watch?v=x", "140")
+	assert [call["format"] for call in fake.calls] == ["140", "140"]
+	assert "cookiesfrombrowser" not in fake.calls[1]
+
+
+def test_js_challenge_failure_without_cookies_is_not_cookie_related(monkeypatch, deno_on_path, capsys):
+	"""Cookie を使っていなければ Cookie 関連とせず、今までの予備設定で取り直す"""
+	fake = install_fake_yt_dlp(monkeypatch)
+
+	def extract(self: Any, url: str, download: bool = False) -> dict[str, Any]:
+		"""Returns: 予備設定なら固定の動画情報。Raises: 通常の設定は形式の不足"""
+		fake.calls.append(self.params)
+		self.params["logger"].warning(JS_CHALLENGE_WARNING)
+		if "impersonate" not in self.params:
+			raise FakeDownloadError(FORMAT_UNAVAILABLE)
+		return dict(VIDEO_INFO)
+
+	monkeypatch.setattr(fake.YoutubeDL, "extract_info", extract)
+	from worker import Worker, build_options
+
+	worker = Worker(build_options("cache", None, None))
+	assert worker.resolve("https://www.youtube.com/watch?v=x", None)["fallback"] is True
+	assert len(fake.calls) == 2
+	assert "cookieless" not in capsys.readouterr().err
+
+
+def test_non_cookie_failure_with_cookies_keeps_cookies_in_fallback(monkeypatch, deno_on_path, capsys):
+	"""Cookie を使っていても、Cookie 関連でない失敗は Cookie ありの予備設定で取り直す"""
+	fake = install_first_fails(monkeypatch, "HTTP Error 403: Forbidden")
+	from worker import Worker, build_options
+
+	worker = Worker(build_options("cache", "firefox", None))
+	worker.resolve("https://www.youtube.com/watch?v=x", None)
+	assert fake.calls[1]["cookiesfrombrowser"] == ("firefox",)
+	assert "cookieless" not in capsys.readouterr().err
+
+
+def test_cookie_failure_with_rate_limit_is_not_retried(monkeypatch, deno_on_path):
+	"""Cookie の失効の警告があっても、単なる回数制限では取り直さない"""
+	fake = install_cookie_failure(
+		monkeypatch, COOKIES_INVALID_WARNING, FakeDownloadError("HTTP Error 429: Too Many Requests"),
+	)
+	from worker import Worker, build_options
+
+	worker = Worker(build_options("cache", "firefox", None))
+	with pytest.raises(FakeDownloadError):
+		worker.resolve("https://www.youtube.com/watch?v=x", None)
+	assert len(fake.calls) == 1
+
+
+def test_warning_without_failure_does_nothing(monkeypatch, deno_on_path):
+	"""解読の警告が出ても取得が成功したら、取り直さない"""
+	fake = install_fake_yt_dlp(monkeypatch)
+
+	def extract(self: Any, url: str, download: bool = False) -> dict[str, Any]:
+		"""Returns: 警告を出して固定の動画情報"""
+		fake.calls.append(self.params)
+		self.params["logger"].warning(JS_CHALLENGE_WARNING)
+		return dict(VIDEO_INFO)
+
+	monkeypatch.setattr(fake.YoutubeDL, "extract_info", extract)
+	from worker import Worker, build_options
+
+	worker = Worker(build_options("cache", "firefox", None))
+	assert worker.resolve("https://www.youtube.com/watch?v=x", None)["fallback"] is False
+	assert len(fake.calls) == 1
+
+
+def test_cookieless_failure_reports_both_errors(monkeypatch, deno_on_path):
+	"""Cookie なしでも失敗したら、両方の理由を返す"""
+	install_cookie_failure(
+		monkeypatch, JS_CHALLENGE_WARNING, FakeDownloadError(FORMAT_UNAVAILABLE),
+		FakeDownloadError("Sign in to confirm you're not a bot"),
+	)
+	from worker import FallbackFailedError, Worker, build_options
+
+	worker = Worker(build_options("cache", "firefox", None))
+	with pytest.raises(FallbackFailedError) as caught:
+		worker.resolve("https://www.youtube.com/watch?v=x", None)
+	message = str(caught.value)
+	assert message.startswith(FORMAT_UNAVAILABLE)
+	assert "not a bot" in message
+
+
+def test_cookieless_is_not_remembered(monkeypatch, deno_on_path):
+	"""Cookie なしで解決できた動画も覚えず、次も Cookie ありの主経路から試す"""
+	fake = install_cookie_failure(monkeypatch, JS_CHALLENGE_WARNING, FakeDownloadError(FORMAT_UNAVAILABLE))
+	from worker import Worker, build_options
+
+	worker = Worker(build_options("cache", "firefox", None))
+	url = "https://www.youtube.com/watch?v=jNQXAC9IVRw"
+	worker.resolve(url, None)
+	fake.calls.clear()
+	worker.resolve(url, None)
+	assert fake.calls[0]["cookiesfrombrowser"] == ("firefox",)
+	assert len(fake.calls) == 2
+
+
+def test_cookieless_is_skipped_when_little_budget_remains(monkeypatch, deno_on_path, capsys):
+	"""持ち時間の残りが足りなければ、Cookie なしでも取り直さない"""
+	fake = install_cookie_failure(monkeypatch, JS_CHALLENGE_WARNING, FakeDownloadError(FORMAT_UNAVAILABLE))
+	from worker import FALLBACK_MIN_SECONDS, Worker, build_options
+
+	worker = Worker(build_options("cache", "firefox", None))
+	request_budget.begin(FALLBACK_MIN_SECONDS - 1.0)
+	try:
+		with pytest.raises(FakeDownloadError):
+			worker.resolve("https://www.youtube.com/watch?v=x", None)
+	finally:
+		request_budget.end()
+	assert len(fake.calls) == 1
+	assert "cookieless skipped" in capsys.readouterr().err
+
+
+def test_worker_starts_without_cookie_module(monkeypatch, deno_on_path):
+	"""yt_dlp.cookies が無い yt-dlp でも Worker を作れる (Cookie の読み込みの失敗は判定しないだけ)"""
+	install_fake_yt_dlp(monkeypatch, internals=False)
+	from worker import Worker, build_options
+
+	worker = Worker(build_options("cache", "firefox", None))
+	assert worker.fallback_ready is False
 
 
 def resolve_with_info(monkeypatch: pytest.MonkeyPatch, extra: dict[str, Any]) -> dict[str, Any]:

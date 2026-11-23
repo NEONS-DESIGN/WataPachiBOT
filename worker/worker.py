@@ -18,6 +18,7 @@ yt-dlp 常駐ワーカー。
 	python worker.py --cachedir .cache --cookies firefox --premium auto --request-budget-secs 28
 """
 import argparse
+import contextlib
 import json
 import os
 import queue
@@ -26,13 +27,14 @@ import sys
 import threading
 import time
 import urllib.parse
+from collections.abc import Iterator
 from typing import Any, BinaryIO, Callable
 
 import request_budget
 import speedups
 # 予備設定の記憶と失敗の型は別のモジュールに置く。従来どおり worker からも参照できるようにする
 from fallback import FallbackFailedError, FallbackMemory
-from protocol import UnsupportedUrlError, classify_error, is_bot_check, validate_url
+from protocol import UnsupportedUrlError, classify_error, cookie_failure, is_bot_check, validate_url
 
 # 既定の形式。opus を優先し、無ければ音声のみ、それも無ければ最良
 DEFAULT_FORMAT = "bestaudio[acodec=opus]/bestaudio/best"
@@ -48,6 +50,12 @@ FALLBACK_MIN_SECONDS = 5.0
 
 # 予備設定を実行するスレッドの名前
 FALLBACK_THREAD_NAME = "stream-fallback"
+# Cookie を外した予備設定を実行するスレッドの名前 (Cookie ありの予備設定とインスタンスを分ける)
+COOKIELESS_THREAD_NAME = "stream-cookieless"
+# Cookie を外した予備設定で取り除くオプション
+COOKIE_OPTION_KEYS = ("cookiesfrombrowser", "cookiefile")
+# Firefox の Cookie を読み込めなかったときの、Cookie 関連の失敗の理由の名前
+COOKIE_FAILURE_LOAD = "cookie_load"
 
 # 前の通信からこの秒数以上あいたら、次の要求の前に HTTP の接続を閉じて張り直す
 # (使い回した接続は放置の間に経路の途中で切られ、次の要求が socket_timeout まで止まる。
@@ -147,10 +155,36 @@ RESOLVE_KEYS = (
 class StderrLogger:
 	"""
 	yt-dlp のログをすべて標準エラーへ出すロガー。呼び出しは yt-dlp が行う。
+	- recording の間は、そのスレッドで出た警告を記録する (Cookie 関連の失敗の判定に使う)
+	- yt-dlp は only_once の警告も、logger があれば毎回 warning を呼ぶ
 
 	呼び出し例:
 		yt_dlp.YoutubeDL({"logger": StderrLogger()})
+		with logger.recording() as warnings: ...
 	"""
+
+	def __init__(self) -> None:
+		"""記録先はスレッドごとに持つ。Example: StderrLogger()"""
+		self._local = threading.local()
+
+	@contextlib.contextmanager
+	def recording(self) -> Iterator[list[str]]:
+		"""
+		抜けるまでの間、呼び出したスレッドで出た警告を list に足す。入れ子にしない。
+		- 打ち切られた予備設定のスレッドが後から出す警告は、別のスレッドのため混ざらない
+
+		Returns:
+			警告を足していく list (抜けた後も読める)
+		Example:
+			with logger.recording() as warnings:
+				ydl.extract_info(url, download=False)
+		"""
+		warnings: list[str] = []
+		self._local.warnings = warnings
+		try:
+			yield warnings
+		finally:
+			self._local.warnings = None
 
 	def _write(self, level: str, message: str) -> None:
 		"""1 行を標準エラーへ出す。Args: level はログレベル、message は本文。Example: self._write("info", "abc")"""
@@ -164,8 +198,11 @@ class StderrLogger:
 		self._write("info", message)
 
 	def warning(self, message: str) -> None:
-		"""warning レベルを出す。Args: message は本文。Example: logger.warning("abc")"""
+		"""warning レベルを出し、記録中なら記録する。Args: message は本文。Example: logger.warning("abc")"""
 		self._write("warning", message)
+		warnings = getattr(self._local, "warnings", None)
+		if warnings is not None:
+			warnings.append(message)
 
 	def error(self, message: str) -> None:
 		"""error レベルを出す。Args: message は本文。Example: logger.error("abc")"""
@@ -572,6 +609,19 @@ class Worker:
 			self._fallback_base = fallback_base
 		except Exception as error:  # 予備設定が無くても通常の解決はできるため、記録して続ける
 			speedups.log(f"stream_fallback: {type(error).__name__}: {error}")
+		# Cookie 関連の失敗で使う、予備設定から Cookie を外した設定。Cookie を使っていなければ作らない
+		self._cookieless_base: dict[str, Any] | None = None
+		if self._fallback_base is not None and any(key in self._stream_base for key in COOKIE_OPTION_KEYS):
+			self._cookieless_base = {
+				key: value for key, value in self._fallback_base.items() if key not in COOKIE_OPTION_KEYS
+			}
+		self._cookieless_runner = BoundedRunner(COOKIELESS_THREAD_NAME)
+		# Cookie の読み込みの失敗の型。古い yt-dlp に無ければ、その失敗は Cookie 関連として扱わない
+		try:
+			from yt_dlp.cookies import CookieLoadError
+			self._cookie_load_error: type[BaseException] | None = CookieLoadError
+		except ImportError:
+			self._cookie_load_error = None
 		self.yt_dlp_version = yt_dlp.version.__version__
 
 	@property
@@ -678,15 +728,19 @@ class Worker:
 		- Cookie ありの not_found から予備設定で解決できた動画は FallbackMemory に覚え、次からは主経路を飛ばして
 			予備設定へ直接回す (形式の指定によらない)。直接回した予備設定が失敗したら、その動画を忘れて失敗を返す
 			(動画の状態が変わった可能性があるため、次の要求は主経路から試す)
+		- Cookie を使っていて、主経路の失敗が Cookie 関連 (protocol.cookie_failure、または Cookie の読み込みの失敗) なら、
+			上の予備設定の代わりに、予備設定から Cookie を外した設定で 1 回だけ取り直す。判定には主経路の取得の間に
+			yt-dlp が出した警告を使う。Cookie なしで解決できても覚えない (次の要求も Cookie ありから試す)
 
 		Args:
 			url: 検査済みの動画の URL
 			format_id: 固定する形式。None なら DEFAULT_FORMAT
 		Returns:
-			yt-dlp の情報の辞書と、予備設定で取得したかどうかの組
+			yt-dlp の情報の辞書と、予備設定 (Cookie なしを含む) で取得したかどうかの組
 		Raises:
 			yt_dlp.utils.DownloadError: 失敗し、予備設定を使えない、使わない、または残りの秒数が足りない場合。
 				直接回した予備設定が失敗した場合も、その例外をそのまま送出する
+			yt_dlp.cookies.CookieLoadError: Cookie を読み込めず、Cookie なしで取り直せない (予備設定が無い、残りの秒数が足りない) 場合
 			FallbackTimeoutError: 直接回した予備設定が持ち時間の残りを超えた場合
 			FallbackFailedError: 予備設定でも失敗した、または持ち時間の残りを超えた場合
 		Example:
@@ -705,35 +759,114 @@ class Worker:
 					speedups.log(f"fallback direct failed: {video_id}: {str(error)[:MAX_ERROR_MESSAGE_CHARS]}")
 					raise
 				return info, True
+		logger = self._stream_base.get("logger")
+		recorder = logger.recording() if isinstance(logger, StderrLogger) else contextlib.nullcontext([])
+		cookie_reason: str | None = None
 		try:
-			return self._pinned_instance(format_id).extract_info(url, download=False), False
-		except self._yt_dlp.utils.DownloadError as first_error:
-			reason = str(first_error)
-			code = classify_error(reason)
-			not_found_with_cookies = code == "not_found" and bool(self._stream_base.get("cookiesfrombrowser"))
-			retryable = code == "internal" or is_bot_check(reason) or not_found_with_cookies
-			if base is None or not retryable:
+			with recorder as recorded:
+				return self._pinned_instance(format_id).extract_info(url, download=False), False
+		except self._yt_dlp.utils.DownloadError as error:
+			if self._cookieless_base is not None:
+				cookie_reason = cookie_failure(recorded, str(error))
+			if cookie_reason is None:
+				return self._retry_with_fallback(url, format_id, video_id, error)
+			first_error: Exception = error
+		except Exception as error:
+			# Cookie の読み込みの失敗は DownloadError に包まれずに届く。それ以外は今までどおり呼び出し元へ
+			load_error = self._cookie_load_error
+			if self._cookieless_base is None or load_error is None or not isinstance(error, load_error):
 				raise
-			limit = request_budget.remaining()
-			if limit is not None and limit < FALLBACK_MIN_SECONDS:
-				speedups.log(f"fallback skipped: {url}: {max(limit, 0.0):.1f}s left")
-				raise
-			speedups.log(f"fallback: {url}: {str(first_error)[:MAX_ERROR_MESSAGE_CHARS]}")
-			try:
-				info = self._run_fallback(base, url, format_id, limit)
-			except Exception as fallback_error:
-				raise FallbackFailedError(first_error, fallback_error) from fallback_error
-			speedups.log(f"fallback succeeded: {url}")
-			# ボット判定や internal は一時的なことが多いため覚えない (覚えると速い主経路を使わなくなる)
-			if not_found_with_cookies:
-				info_id = info.get("id") if isinstance(info, dict) else None
-				if video_id is None and isinstance(info_id, str) and VIDEO_ID_PATTERN.fullmatch(info_id):
-					video_id = info_id
-				if video_id is not None:
-					self._fallback_memory.remember(video_id)
-			return info, True
+			cookie_reason = COOKIE_FAILURE_LOAD
+			first_error = error
+		return self._retry_without_cookies(url, format_id, first_error, cookie_reason)
 
-	def _run_fallback(self, base: dict[str, Any], url: str, format_id: str | None, limit: float | None) -> dict[str, Any]:
+	def _retry_without_cookies(
+		self, url: str, format_id: str | None, first_error: Exception, cookie_reason: str,
+	) -> tuple[dict[str, Any], bool]:
+		"""
+		Cookie 関連の失敗の後、予備設定から Cookie を外した設定で 1 回だけ取り直す。
+		- 持ち時間の残りが FALLBACK_MIN_SECONDS 未満なら取り直さず、最初の失敗を送出する
+		- 解決できても FallbackMemory には覚えない (次の要求も Cookie ありの主経路から試す)
+		- _cookieless_base があるときだけ呼ぶ (無ければ first_error を送出する)
+
+		Args:
+			url: 検査済みの動画の URL
+			format_id: 固定する形式。None なら DEFAULT_FORMAT
+			first_error: 主経路の失敗
+			cookie_reason: Cookie 関連の失敗の理由の名前 (標準エラーの記録に使う)
+		Returns:
+			yt-dlp の情報の辞書と True (予備設定で取得した) の組
+		Raises:
+			Exception: 残りの秒数が足りない場合は first_error をそのまま送出する
+			FallbackFailedError: Cookie なしでも失敗した、または持ち時間の残りを超えた場合
+		Example:
+			return self._retry_without_cookies(url, None, error, "js_challenge")
+		"""
+		base = self._cookieless_base
+		if base is None:
+			raise first_error
+		limit = request_budget.remaining()
+		if limit is not None and limit < FALLBACK_MIN_SECONDS:
+			speedups.log(f"cookieless skipped: {url}: {max(limit, 0.0):.1f}s left")
+			raise first_error
+		speedups.log(f"cookieless: {url}: {cookie_reason}: {str(first_error)[:MAX_ERROR_MESSAGE_CHARS]}")
+		try:
+			info = self._run_fallback(base, url, format_id, limit, self._cookieless_runner)
+		except Exception as fallback_error:
+			raise FallbackFailedError(first_error, fallback_error) from fallback_error
+		speedups.log(f"cookieless succeeded: {url}")
+		return info, True
+
+	def _retry_with_fallback(
+		self, url: str, format_id: str | None, video_id: str | None, first_error: Exception,
+	) -> tuple[dict[str, Any], bool]:
+		"""
+		主経路の失敗 (Cookie 関連でないもの) の後、取り直す対象なら予備設定で 1 回だけ取り直す。
+		- 取り直す条件と覚える条件は _extract_stream の説明のとおり
+
+		Args:
+			url: 検査済みの動画の URL
+			format_id: 固定する形式。None なら DEFAULT_FORMAT
+			video_id: URL から取り出した動画 ID。取り出せなければ None
+			first_error: 主経路の DownloadError
+		Returns:
+			yt-dlp の情報の辞書と True (予備設定で取得した) の組
+		Raises:
+			yt_dlp.utils.DownloadError: 取り直す対象でない、予備設定を使えない、または残りの秒数が足りない場合
+			FallbackFailedError: 予備設定でも失敗した、または持ち時間の残りを超えた場合
+		Example:
+			return self._retry_with_fallback(url, None, "jNQXAC9IVRw", error)
+		"""
+		base = self._fallback_base
+		reason = str(first_error)
+		code = classify_error(reason)
+		not_found_with_cookies = code == "not_found" and bool(self._stream_base.get("cookiesfrombrowser"))
+		retryable = code == "internal" or is_bot_check(reason) or not_found_with_cookies
+		if base is None or not retryable:
+			raise first_error
+		limit = request_budget.remaining()
+		if limit is not None and limit < FALLBACK_MIN_SECONDS:
+			speedups.log(f"fallback skipped: {url}: {max(limit, 0.0):.1f}s left")
+			raise first_error
+		speedups.log(f"fallback: {url}: {str(first_error)[:MAX_ERROR_MESSAGE_CHARS]}")
+		try:
+			info = self._run_fallback(base, url, format_id, limit)
+		except Exception as fallback_error:
+			raise FallbackFailedError(first_error, fallback_error) from fallback_error
+		speedups.log(f"fallback succeeded: {url}")
+		# ボット判定や internal は一時的なことが多いため覚えない (覚えると速い主経路を使わなくなる)
+		if not_found_with_cookies:
+			info_id = info.get("id") if isinstance(info, dict) else None
+			if video_id is None and isinstance(info_id, str) and VIDEO_ID_PATTERN.fullmatch(info_id):
+				video_id = info_id
+			if video_id is not None:
+				self._fallback_memory.remember(video_id)
+		return info, True
+
+	def _run_fallback(
+		self, base: dict[str, Any], url: str, format_id: str | None, limit: float | None,
+		runner: BoundedRunner | None = None,
+	) -> dict[str, Any]:
 		"""
 		予備設定の実行スレッドで取得する。待ちは limit 秒で打ち切る。
 
@@ -742,6 +875,8 @@ class Worker:
 			url: 検査済みの動画の URL
 			format_id: 固定する形式。None なら DEFAULT_FORMAT
 			limit: 待つ上限秒数 (今の要求の持ち時間の残り)。None なら終わるまで待つ
+			runner: 実行するスレッド。None なら Cookie ありの予備設定のスレッド。
+				インスタンスはスレッドごとに形式で持つため、base ごとに別のスレッドを渡す
 		Returns:
 			yt-dlp の情報の辞書
 		Raises:
@@ -750,7 +885,7 @@ class Worker:
 		Example:
 			info = self._run_fallback(self._fallback_base, url, None, request_budget.remaining())
 		"""
-		return self._fallback_runner.run(
+		return (runner or self._fallback_runner).run(
 			lambda cache: self._instance_for(cache, base, format_id).extract_info(url, download=False), limit,
 		)
 
