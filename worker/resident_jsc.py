@@ -6,6 +6,8 @@ YouTube の JS チャレンジ (n / sig) を、ワーカーに常駐させた De
 - 失敗時は JsChallengeProviderError を送出し、yt-dlp が標準の Deno プロバイダで解き直す。Deno は次の解読で起動し直す
 - 標準のプロバイダ (待ちに上限が無い) は、今の要求の持ち時間の残りが STANDARD_PROVIDER_MIN_SECONDS 未満なら使わせない
 	(EJSBaseJCP.is_available を包む。包めなければ標準の動作のまま続ける)
+- 解読スクリプトのエラーで解けなかったプレイヤーは期限つきで覚え、常駐 Deno にも標準のプロバイダにも解かせない
+	(EJSBaseJCP._real_bulk_solve を包む。包めなければ標準のプロバイダは今までどおり解き直す)
 - Deno の標準出力と標準エラーはパイプで受け取る。ワーカーのプロトコル用の標準出力には流れない
 - yt-dlp の内部 API に依存する。import に失敗したら speedups が登録を諦め、標準の動作のまま続ける
 - 各往復の上限は、今の要求の持ち時間の残り (request_budget) で切り詰める。Rust 側にワーカーごと落とされる前に
@@ -34,7 +36,7 @@ import sys
 import threading
 import time
 import urllib.parse
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import Any
 
 from yt_dlp.extractor.youtube.jsc._builtin.deno import DenoJCP
@@ -93,6 +95,17 @@ STARTED_LOG = "[resident_jsc] deno started"
 STANDARD_PROVIDER_MIN_SECONDS = 5.0
 # 標準のプロバイダの is_available を差し替えた印 (同じクラスを二重に包まないため)
 BUDGET_GATE_MARK = "_watapachi_budget_gate"
+# 解読スクリプトのエラーで解けなかったプレイヤーを覚える件数の上限と秒数
+# (エラーはプレイヤーと解読スクリプトの組で決まり、解き直しても同じ。解読スクリプトは venv の入れ替え (ワーカーの起動し直し) でしか
+#  変わらない。一時的な失敗を誤って覚えても、期限が過ぎれば解き直す)
+BROKEN_PLAYER_MEMORY_SIZE = 16
+BROKEN_PLAYER_TTL_SECONDS = 1800.0
+# 標準のプロバイダの _real_bulk_solve を差し替えた印 (同じクラスを二重に包まないため)
+BROKEN_PLAYER_GATE_MARK = "_watapachi_broken_player_gate"
+# 解けなかったプレイヤーを覚えたときに標準エラーへ出す記録 (後ろに URL とエラーを付ける)
+BROKEN_PLAYER_LOG = "[resident_jsc] broken player remembered"
+# 覚えたプレイヤーの要求に返すエラーの説明 (後ろに URL を付ける)
+BROKEN_PLAYER_MESSAGE = "解読に失敗したプレイヤーのため解きません"
 
 
 class _LineCount:
@@ -125,6 +138,86 @@ class _BudgetExhaustedError(JsChallengeProviderError):
 	Example:
 		raise _BudgetExhaustedError("要求の持ち時間のうちに常駐 Deno の順番が来ませんでした")
 	"""
+
+
+class _BrokenPlayers:
+	"""
+	解読スクリプトのエラーで解けなかったプレイヤーの URL を、期限つきで上限の件数まで覚える。
+	- 主経路、予備設定、Cookie なしの実行スレッドから使うため、ロックで守る
+	- 上限を超えたら、覚えた時刻の古いものから忘れる
+
+	Example:
+		memory = _BrokenPlayers(BROKEN_PLAYER_MEMORY_SIZE, BROKEN_PLAYER_TTL_SECONDS)
+		memory.remember(player_url)
+		memory.recall(player_url) -> True
+	"""
+
+	def __init__(self, size: int, ttl: float, clock: Callable[[], float] = time.monotonic) -> None:
+		"""
+		Args:
+			size: 覚える件数の上限
+			ttl: 覚えておく秒数
+			clock: 現在時刻 (秒) を返す関数。試験で差し替える
+		Example:
+			_BrokenPlayers(16, 1800.0)
+		"""
+		self._size = size
+		self._ttl = ttl
+		self._clock = clock
+		self._lock = threading.Lock()
+		self._expires: collections.OrderedDict[str, float] = collections.OrderedDict()
+
+	def remember(self, player_url: str) -> None:
+		"""
+		プレイヤーを覚える。覚え済みなら期限を延ばす。
+
+		Args:
+			player_url: プレイヤーの URL
+		Example:
+			memory.remember(player_url)
+		"""
+		with self._lock:
+			self._expires.pop(player_url, None)
+			self._expires[player_url] = self._clock() + self._ttl
+			while len(self._expires) > self._size:
+				self._expires.popitem(last=False)
+
+	def recall(self, player_url: str) -> bool:
+		"""
+		プレイヤーを覚えているかを返す。期限を過ぎていたら忘れる。
+
+		Args:
+			player_url: プレイヤーの URL
+		Returns:
+			期限の内に覚えていれば True
+		Example:
+			memory.recall(player_url) -> False
+		"""
+		with self._lock:
+			expires = self._expires.get(player_url)
+			if expires is None:
+				return False
+			if self._clock() >= expires:
+				del self._expires[player_url]
+				return False
+			return True
+
+
+def _broken_player_responses(requests: list[JsChallengeRequest]) -> Iterator[JsChallengeProviderResponse]:
+	"""
+	覚えたプレイヤーの要求に、解かずにエラーの応答を返す。
+
+	Args:
+		requests: 覚えたプレイヤーの要求
+	Returns:
+		要求ごとのエラーの応答を返すイテレータ (yt-dlp は次のプロバイダへ回し、最後は解読の失敗として警告する)
+	Example:
+		yield from _broken_player_responses(grouped_requests)
+	"""
+	for request in requests:
+		# 2 番目の引数は expected (想定内の失敗として、yt-dlp に不具合の報告を促させない)
+		error = JsChallengeProviderError(f"{BROKEN_PLAYER_MESSAGE}: {request.input.player_url}", True)
+		yield JsChallengeProviderResponse(request, None, error)
 
 
 def _round_trip_limit(default: float) -> float:
@@ -505,6 +598,8 @@ class _ResidentDeno:
 
 
 _server = _ResidentDeno()
+# 解読スクリプトのエラーで解けなかったプレイヤー。常駐 Deno と標準のプロバイダの両方が引く
+_broken_players = _BrokenPlayers(BROKEN_PLAYER_MEMORY_SIZE, BROKEN_PLAYER_TTL_SECONDS)
 
 
 @register_provider
@@ -529,6 +624,8 @@ class ResidentDenoJCP(DenoJCP):
 	def _real_bulk_solve(self, requests: list[JsChallengeRequest]) -> Iterator[JsChallengeProviderResponse]:
 		"""
 		プレイヤーごとにまとめて常駐 Deno で解く。yt-dlp が呼ぶ。
+		- 解読スクリプトのエラー (_SolverError) で解けなかったプレイヤーは覚えて、期限まで Deno に送らずにエラーの応答を返す
+			(同じ失敗の繰り返しと、Deno が保持した別の版のプレイヤーの読み込み直しを省く)
 
 		Args:
 			requests: 解読の要求
@@ -547,7 +644,15 @@ class ResidentDenoJCP(DenoJCP):
 		for request in requests:
 			grouped[request.input.player_url].append(request)
 		for player_url, grouped_requests in grouped.items():
-			output = self._solve(player_url, grouped_requests)
+			if _broken_players.recall(player_url):
+				yield from _broken_player_responses(grouped_requests)
+				continue
+			try:
+				output = self._solve(player_url, grouped_requests)
+			except _SolverError as error:
+				_broken_players.remember(player_url)
+				print(f"{BROKEN_PLAYER_LOG}: {player_url}: {str(error)[:STDERR_MESSAGE_LIMIT]}", file=sys.stderr, flush=True)
+				raise
 			responses = output.get("responses")
 			if not isinstance(responses, list) or len(responses) != len(grouped_requests):
 				raise JsChallengeProviderError(
@@ -688,6 +793,62 @@ try:
 except Exception as _gate_error:  # 包めなくても常駐 Deno は使える。標準のプロバイダは上限なしのまま (従来の動作)
 	BUDGET_GATE_INSTALLED = False
 	print(f"[resident_jsc] budget_gate: {type(_gate_error).__name__}: {_gate_error}", file=sys.stderr, flush=True)
+
+
+def _install_broken_player_gate() -> bool:
+	"""
+	標準の JS チャレンジプロバイダ (EJSBaseJCP の派生) の _real_bulk_solve を包み、常駐 Deno が解読に失敗して覚えた
+	プレイヤーの要求を、ランタイムを起動せずにエラーの応答で返す。残りの要求だけを元の関数に渡す。
+	- yt-dlp は常駐 Deno の失敗の後、標準の Deno で解き直す。解読スクリプトのエラーはランタイムを替えても同じため、起動の待ちを省く
+	- 常駐 Deno のプロバイダ (ResidentDenoJCP) は _real_bulk_solve を自分で持つため、包んだ関数を通らない
+	- yt-dlp の内部 API (EJSBaseJCP._real_bulk_solve) に依存する。包めなければ例外を送出し、呼び出し側が標準の動作のまま続ける
+	- 二重に包まない (BROKEN_PLAYER_GATE_MARK の印で見分ける)
+
+	Returns:
+		包んだ (または包み済み) なら True
+	Raises:
+		ImportError / KeyError: yt-dlp の内部構成が変わった場合
+	Example:
+		_install_broken_player_gate() -> True
+	"""
+	from yt_dlp.extractor.youtube.jsc._builtin.ejs import EJSBaseJCP
+
+	original = EJSBaseJCP.__dict__["_real_bulk_solve"]
+	if getattr(original, BROKEN_PLAYER_GATE_MARK, False):
+		return True
+
+	def _real_bulk_solve(self: Any, requests: list[JsChallengeRequest]) -> Iterator[JsChallengeProviderResponse]:
+		"""
+		覚えたプレイヤーの要求にエラーの応答を返し、残りを元の関数で解く。yt-dlp が呼ぶ。
+
+		Args:
+			requests: 解読の要求
+		Returns:
+			要求ごとの応答を返すイテレータ
+		Example:
+			responses = list(provider._real_bulk_solve(requests))
+		"""
+		broken = [request for request in requests if _broken_players.recall(request.input.player_url)]
+		yield from _broken_player_responses(broken)
+		# 要求は値で比べると同じものがありうるため、同じオブジェクトかで分ける
+		broken_ids = {id(request) for request in broken}
+		remaining = [request for request in requests if id(request) not in broken_ids]
+		if remaining:
+			yield from original(self, remaining)
+
+	setattr(_real_bulk_solve, BROKEN_PLAYER_GATE_MARK, True)
+	EJSBaseJCP._real_bulk_solve = _real_bulk_solve
+	return True
+
+
+try:
+	BROKEN_PLAYER_GATE_INSTALLED = _install_broken_player_gate()
+except Exception as _broken_gate_error:  # 包めなくても常駐 Deno の記憶は使える。標準のプロバイダは今までどおり解き直す
+	BROKEN_PLAYER_GATE_INSTALLED = False
+	print(
+		f"[resident_jsc] broken_player_gate: {type(_broken_gate_error).__name__}: {_broken_gate_error}",
+		file=sys.stderr, flush=True,
+	)
 
 
 def _latest_cached_player_url(ydl: Any) -> str | None:

@@ -705,7 +705,19 @@ def test_fallback_is_bounded_by_the_remaining_budget(monkeypatch, deno_on_path):
 	assert time.monotonic() - started < stall / 2
 
 
-def import_resident_jsc(monkeypatch: pytest.MonkeyPatch, *, standard_available: bool | None = None) -> types.ModuleType:
+class FakeProviderResponse:
+	"""JsChallengeProviderResponse の代用。要求、解読の結果、エラーを持つ"""
+
+	def __init__(self, request: Any, response: Any = None, error: Exception | None = None) -> None:
+		"""Args: request は要求、response は解読の結果、error はエラー"""
+		self.request = request
+		self.response = response
+		self.error = error
+
+
+def import_resident_jsc(
+	monkeypatch: pytest.MonkeyPatch, *, standard_available: bool | None = None, standard_solve: Any = None,
+) -> types.ModuleType:
 	"""
 	偽の yt_dlp の内部 API を置いて resident_jsc を読み込む。Deno の代わりの子プロセスで _ResidentDeno を試すため。
 
@@ -713,6 +725,8 @@ def import_resident_jsc(monkeypatch: pytest.MonkeyPatch, *, standard_available: 
 		monkeypatch: pytest の monkeypatch
 		standard_available: None でなければ、偽の EJSBaseJCP に is_available (この値を返す) を持たせ、
 			DenoJCP をその派生にする (標準のプロバイダの持ち時間の門を試すため)
+		standard_solve: None でなければ、偽の EJSBaseJCP の _real_bulk_solve にし、DenoJCP をその派生にする
+			(解読できなかったプレイヤーの門を試すため)
 	Returns:
 		読み込んだ resident_jsc モジュール
 	Example:
@@ -722,6 +736,9 @@ def import_resident_jsc(monkeypatch: pytest.MonkeyPatch, *, standard_available: 
 	deno_base: type = object
 	if standard_available is not None:
 		fake.EJSBaseJCP.is_available = lambda self: standard_available
+		deno_base = fake.EJSBaseJCP
+	if standard_solve is not None:
+		fake.EJSBaseJCP._real_bulk_solve = standard_solve
 		deno_base = fake.EJSBaseJCP
 
 	class JsChallengeProviderError(Exception):
@@ -737,7 +754,7 @@ def import_resident_jsc(monkeypatch: pytest.MonkeyPatch, *, standard_available: 
 			"JsChallengeProvider": object,
 			"JsChallengeProviderError": JsChallengeProviderError,
 			"JsChallengeProviderRejectedRequest": type("Rejected", (JsChallengeProviderError,), {}),
-			"JsChallengeProviderResponse": object,
+			"JsChallengeProviderResponse": FakeProviderResponse,
 			"JsChallengeRequest": object,
 			"JsChallengeResponse": object,
 			"JsChallengeType": types.SimpleNamespace(N="n"),
@@ -1416,6 +1433,127 @@ def test_missing_is_available_leaves_standard_behaviour(monkeypatch):
 	"""yt-dlp の内部構成が違って包めなくても、resident_jsc の読み込みは失敗しない"""
 	resident_jsc = import_resident_jsc(monkeypatch)
 	assert resident_jsc.BUDGET_GATE_INSTALLED is False
+
+
+BROKEN_PLAYER = "https://www.youtube.com/s/player/05a4ffc0/player_ias.vflset/en_US/base.js"
+GOOD_PLAYER = "https://www.youtube.com/s/player/6b3d0364/player_ias.vflset/en_US/base.js"
+
+
+def challenge(player_url: str, kind: str = "n") -> types.SimpleNamespace:
+	"""Args: player_url はプレイヤーの URL、kind は種類。Returns: JsChallengeRequest の代用"""
+	return types.SimpleNamespace(
+		type=kind, video_id="vid", input=types.SimpleNamespace(player_url=player_url, challenges=["abc"]),
+	)
+
+
+def resident_provider(resident_jsc: types.ModuleType, solve: Any) -> Any:
+	"""
+	_solve を差し替えた常駐 Deno のプロバイダを作る (Deno を起動しない)。
+
+	Args:
+		resident_jsc: import_resident_jsc の戻り値
+		solve: _solve の代わり。(player_url, requests) を受け取る
+	Returns:
+		ResidentDenoJCP のインスタンス
+	"""
+	provider = resident_jsc.ResidentDenoJCP()
+	provider._lib_script = types.SimpleNamespace(variant="deno")
+	provider._solve = lambda player_url, requests, timeout=None: solve(player_url, requests)
+	return provider
+
+
+def test_broken_players_expire_and_keep_a_limited_number(monkeypatch):
+	"""覚えたプレイヤーは期限まで返し、上限を超えたら古いものから忘れる"""
+	clock = [100.0]
+	resident_jsc = import_resident_jsc(monkeypatch)
+
+	memory = resident_jsc._BrokenPlayers(size=2, ttl=10.0, clock=lambda: clock[0])
+	memory.remember("a")
+	assert memory.recall("a") is True
+	assert memory.recall("b") is False
+	clock[0] += 10.0
+	assert memory.recall("a") is False
+	memory.remember("a")
+	memory.remember("b")
+	memory.remember("c")
+	assert [memory.recall(url) for url in ("a", "b", "c")] == [False, True, True]
+
+
+def test_solver_error_player_is_not_sent_to_deno_again(monkeypatch, capsys):
+	"""解読スクリプトのエラーのプレイヤーを覚え、次からは Deno に送らずにエラーの応答を返す。他のプレイヤーは解く"""
+	resident_jsc = import_resident_jsc(monkeypatch)
+	sent: list[str] = []
+
+	def solve(player_url: str, requests: list[Any]) -> dict[str, Any]:
+		sent.append(player_url)
+		if player_url == BROKEN_PLAYER:
+			raise resident_jsc._SolverError("a.addOnDisposeCallback is not a function")
+		return {"responses": [{"type": "error", "error": "per request"} for _ in requests]}
+
+	provider = resident_provider(resident_jsc, solve)
+	with pytest.raises(resident_jsc._SolverError):
+		list(provider._real_bulk_solve([challenge(BROKEN_PLAYER)]))
+	assert f"broken player remembered: {BROKEN_PLAYER}" in capsys.readouterr().err
+
+	requests = [challenge(BROKEN_PLAYER, "n"), challenge(BROKEN_PLAYER, "sig"), challenge(GOOD_PLAYER)]
+	responses = list(provider._real_bulk_solve(requests))
+	assert sent == [BROKEN_PLAYER, GOOD_PLAYER]
+	assert [response.request for response in responses] == requests
+	assert all(isinstance(response.error, resident_jsc.JsChallengeProviderError) for response in responses)
+	assert BROKEN_PLAYER in str(responses[0].error)
+	# 記憶に当たったことは出さない (要求ごとに出ると多いため)
+	assert "broken player" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("error_name", ["JsChallengeProviderError", "_BudgetExhaustedError"])
+def test_other_failures_do_not_mark_the_player(monkeypatch, error_name):
+	"""通信の失敗や持ち時間切れでは覚えず、次の要求でも Deno で解く"""
+	resident_jsc = import_resident_jsc(monkeypatch)
+	sent: list[str] = []
+
+	def solve(player_url: str, requests: list[Any]) -> dict[str, Any]:
+		sent.append(player_url)
+		raise getattr(resident_jsc, error_name)("failed")
+
+	provider = resident_provider(resident_jsc, solve)
+	for _ in range(2):
+		with pytest.raises(resident_jsc.JsChallengeProviderError):
+			list(provider._real_bulk_solve([challenge(BROKEN_PLAYER)]))
+	assert sent == [BROKEN_PLAYER, BROKEN_PLAYER]
+
+
+def test_standard_providers_skip_remembered_players(monkeypatch):
+	"""標準のプロバイダは、覚えたプレイヤーの要求をランタイムに渡さない。全部が覚えたものなら元の関数を呼ばない"""
+	passed: list[list[Any]] = []
+
+	def standard_solve(self: Any, requests: list[Any]) -> Any:
+		passed.append(list(requests))
+		yield from ()
+
+	resident_jsc = import_resident_jsc(monkeypatch, standard_solve=standard_solve)
+	assert resident_jsc.BROKEN_PLAYER_GATE_INSTALLED is True
+	standard = sys.modules["yt_dlp.extractor.youtube.jsc._builtin.deno"].DenoJCP()
+	resident_jsc._broken_players.remember(BROKEN_PLAYER)
+
+	broken, good = challenge(BROKEN_PLAYER), challenge(GOOD_PLAYER)
+	responses = list(standard._real_bulk_solve([broken, good]))
+	assert passed == [[good]]
+	assert [response.request for response in responses] == [broken]
+	assert isinstance(responses[0].error, resident_jsc.JsChallengeProviderError)
+
+	passed.clear()
+	assert len(list(standard._real_bulk_solve([broken]))) == 1
+	assert passed == []
+	# 二重に包まない
+	gate = sys.modules["yt_dlp.extractor.youtube.jsc._builtin.ejs"].EJSBaseJCP._real_bulk_solve
+	assert resident_jsc._install_broken_player_gate() is True
+	assert sys.modules["yt_dlp.extractor.youtube.jsc._builtin.ejs"].EJSBaseJCP._real_bulk_solve is gate
+
+
+def test_missing_standard_solve_leaves_standard_behaviour(monkeypatch):
+	"""yt-dlp の内部構成が違って標準のプロバイダを包めなくても、resident_jsc の読み込みは失敗しない"""
+	resident_jsc = import_resident_jsc(monkeypatch)
+	assert resident_jsc.BROKEN_PLAYER_GATE_INSTALLED is False
 
 
 def install_warmup_recorder(
