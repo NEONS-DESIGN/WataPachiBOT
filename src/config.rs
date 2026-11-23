@@ -20,6 +20,9 @@ pub const MAX_SHUTDOWN_TIMEOUT_SECS: u64 = 600;
 /// 時間の設定 (秒) の上限 (7 日)。巨大な値で `Instant + Duration` や `Duration` の掛け算があふれて panic しないようにする。
 /// `shutdown.timeout_secs` は別の上限、キャッシュの保持期間 (`cache.*`) は対象外
 pub const MAX_DURATION_SECS: u64 = 7 * 24 * 60 * 60;
+/// `restore.stagger_ms` の上限 (ミリ秒)。復元を終えるまでコマンドの受付を始めないため、
+/// 誤った大きな値で起動後に長くコマンドを受け付けない状態にならないようにする
+pub const MAX_RESTORE_STAGGER_MS: u64 = 5_000;
 /// `worker.worker_count` の上限。1 台は数十 MB の Python のため、誤設定で数を作りすぎないようにする
 pub const MAX_WORKER_COUNT: u32 = 16;
 /// `playback.initial_chunk_size_bytes` を省略したときの値 (256KiB)。
@@ -535,6 +538,11 @@ impl Config {
 			(1..=MAX_SHUTDOWN_TIMEOUT_SECS).contains(&self.shutdown.timeout_secs),
 			"shutdown.timeout_secs",
 			&format!("1 以上 {MAX_SHUTDOWN_TIMEOUT_SECS} 以下"),
+		)?;
+		check(
+			self.restore.stagger_ms <= MAX_RESTORE_STAGGER_MS,
+			"restore.stagger_ms",
+			&format!("{MAX_RESTORE_STAGGER_MS} 以下"),
 		)?;
 
 		let ui = &self.ui;

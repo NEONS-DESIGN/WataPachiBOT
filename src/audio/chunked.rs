@@ -72,9 +72,9 @@ use crate::resolver::Resolver;
 
 /// 再試行の前に待つ時間。設定項目に無いため固定値にする。
 const RETRY_DELAY: Duration = Duration::from_millis(500);
-/// 期限前の取り直しを試みた後、次に期限を確認するまでの間隔 (秒)。設定項目に無いため固定値にする。
+/// 期限前の取り直しを試みた後、次に期限を確認するまでの間隔。設定項目に無いため固定値にする。
 /// 取り直した期限がまだ余裕の内側でも、チャンクごとに取り直さないようにする。
-const EXPIRY_RECHECK_INTERVAL_SECS: i64 = 60;
+pub const EXPIRY_RECHECK_INTERVAL: Duration = Duration::from_secs(60);
 /// アダプターのリングバッファの大きさ。Songbird 標準の `HttpRequest` と同じ値。
 const ADAPTER_BUFFER: usize = 64 * 1024;
 /// 現在のチャンクのこの割合 (分子 / 分母) まで読んだら次を先読みする。
@@ -168,6 +168,8 @@ pub struct ChunkConfig {
 	pub refresh_margin: Duration,
 	/// 解決結果の `available_at` まで最初の取得を待つ時間の上限。ZERO は待たない
 	pub available_wait_max: Duration,
+	/// 期限前の取り直しを試みた後、次に期限を確認するまでの間隔。通常は `EXPIRY_RECHECK_INTERVAL`
+	pub expiry_recheck_interval: Duration,
 }
 
 impl ChunkConfig {
@@ -201,6 +203,7 @@ impl ChunkConfig {
 			attempts: playback.chunk_fetch_attempts,
 			refresh_margin: Duration::from_secs(playback.url_refresh_margin_secs),
 			available_wait_max: Duration::from_secs(playback.available_wait_max_secs),
+			expiry_recheck_interval: EXPIRY_RECHECK_INTERVAL,
 		}
 	}
 }
@@ -474,15 +477,19 @@ impl Fetcher {
 		}
 	}
 
-	/// 期限前の取り直しが要るかを判定する。要るときは次の確認を `EXPIRY_RECHECK_INTERVAL_SECS` 後に延ばす。
+	/// 期限前の取り直しが要るかを判定する。要るときは次の確認を `expiry_recheck_interval` 後に延ばす。
 	///
 	/// # 戻り値
 	/// 取り直すべきなら今の URL の期限 (UNIX 秒)。期限が不明 (None)、余裕がある、
-	/// 前回の試みから間が無いときは None
+	/// 前回の試みから間が無い、取り直した取得先を預けているときは None
+	/// (預けた取得先を新しい結果で上書きし続けると、差し替えが起きないまま今の URL の期限を迎えるため)
 	///
 	/// # 例
 	/// `if let Some(expires_at) = self.early_refresh_due() { ... }`
 	fn early_refresh_due(&self) -> Option<i64> {
+		if self.pending_source.load().is_some() {
+			return None;
+		}
 		let expires_at = self.source.load().expires_at?;
 		let margin = i64::try_from(self.config.refresh_margin.as_secs()).unwrap_or(i64::MAX);
 		let now = now_secs();
@@ -493,11 +500,13 @@ impl Fetcher {
 		if now < next {
 			return None;
 		}
+		let interval =
+			i64::try_from(self.config.expiry_recheck_interval.as_secs()).unwrap_or(i64::MAX);
 		// 先読みと並んで呼ばれても 1 回だけ取り直す
 		self.next_expiry_check
 			.compare_exchange(
 				next,
-				now.saturating_add(EXPIRY_RECHECK_INTERVAL_SECS),
+				now.saturating_add(interval),
 				Ordering::Relaxed,
 				Ordering::Relaxed,
 			)
@@ -695,7 +704,7 @@ impl Fetcher {
 	///
 	/// - 試行の前に期限を確認し、近ければ先に取り直す。期限前に取り直しが失敗したら警告して
 	///   今の URL を使い続ける (まだ使えるため)。期限を過ぎていれば失敗を返す
-	/// - 期限前の取り直しは `EXPIRY_RECHECK_INTERVAL_SECS` に 1 回まで
+	/// - 期限前の取り直しは `expiry_recheck_interval` に 1 回まで
 	/// - 403 なら取り直して同じ範囲を待たずに要求する。一時的な失敗 (`is_transient`) は `RETRY_DELAY` 待つ
 	/// - 恒久的な失敗 (404 などの 4xx、長さの不一致)、取り直しの失敗、全長の変化は再試行せずに返す
 	///
@@ -719,6 +728,8 @@ impl Fetcher {
 			if attempt > 0 && !matches!(last_error, ChunkError::Forbidden) {
 				sleep(RETRY_DELAY).await;
 			}
+			// 預けた取得先の時刻が来ていれば先に差し替える (差し替えた後の URL の期限で取り直しを判定するため)
+			self.promote_pending_source();
 			if let Some(expires_at) = self.early_refresh_due() {
 				if let Err(error) = self.refresh(true).await {
 					if now_secs() >= expires_at {

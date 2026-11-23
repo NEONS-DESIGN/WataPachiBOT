@@ -204,7 +204,7 @@ impl GuildActor {
 	///
 	/// # 呼び出し例
 	/// ```ignore
-	/// if self.on_resolve_failed(&error).await == Next::Advance { self.start_next().await; }
+	/// let next = self.on_resolve_failed(&error).await; self.advance_if(next).await;
 	/// ```
 	pub(super) async fn on_resolve_failed(&mut self, error: &ResolveError) -> Next {
 		let policy = self.sup.policy;
@@ -255,6 +255,9 @@ impl GuildActor {
 	/// - 数えた回数が `playback.skip_streak_limit` に達したら、今の曲は飛ばさない。キューの先頭へ戻し、
 	///   キューを残して退出し、`?p` での再開を 1 回だけ案内する (`halt_keeping_queue`)
 	/// - 連続の回数は曲の再生が始まると 0 に戻す (`on_started`)
+	/// - 曲に固有でない理由で飛ばした曲は、終えた曲と同じく記録する (`record_finished`。
+	///   再生を始めていれば履歴へ、ループ中はキューの末尾へ戻す)。曲が悪いとは限らないため、ループから消さない。
+	///   曲に固有の理由 (非公開、削除済み、ライブ配信など) で飛ばした曲は記録せず、ループからも消す
 	///
 	/// # 引数
 	/// - `key`: 飛ばしたときの通知のキー (曲名を差し込む)
@@ -265,7 +268,7 @@ impl GuildActor {
 	///
 	/// # 呼び出し例
 	/// ```ignore
-	/// if self.skip_or_halt(keys::TRACK_SKIPPED, false).await == Next::Advance { self.start_next().await; }
+	/// let next = self.skip_or_halt(keys::TRACK_SKIPPED, false).await; self.advance_if(next).await;
 	/// ```
 	pub(super) async fn skip_or_halt(&mut self, key: &'static str, track_specific: bool) -> Next {
 		if !track_specific {
@@ -275,8 +278,15 @@ impl GuildActor {
 					.await;
 				return Next::Stay;
 			}
+			let finished = self.current.take();
+			self.skip_current(key, finished.as_ref());
+			if let Some(finished) = finished {
+				self.record_finished(finished).await;
+			}
+			return Next::Advance;
 		}
-		self.skip_current(key);
+		let current = self.current.take();
+		self.skip_current(key, current.as_ref());
 		Next::Advance
 	}
 
@@ -385,9 +395,8 @@ impl GuildActor {
 				self.restart_current(Duration::ZERO, true);
 			}
 			FailureStep::Skip => {
-				if self.skip_or_halt(keys::TRACK_SKIPPED, false).await == Next::Advance {
-					self.start_next().await;
-				}
+				let next = self.skip_or_halt(keys::TRACK_SKIPPED, false).await;
+				self.advance_if(next).await;
 			}
 		}
 	}

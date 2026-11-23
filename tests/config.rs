@@ -7,7 +7,8 @@ use std::path::{Path, PathBuf};
 
 use watapachi_bot::audio::limits::VoiceLimits;
 use watapachi_bot::config::{
-	Config, ConfigError, MAX_DURATION_SECS, MAX_SHUTDOWN_TIMEOUT_SECS, MAX_WORKER_COUNT,
+	Config, ConfigError, MAX_DURATION_SECS, MAX_RESTORE_STAGGER_MS, MAX_SHUTDOWN_TIMEOUT_SECS,
+	MAX_WORKER_COUNT,
 };
 use watapachi_bot::lang::Lang;
 use watapachi_bot::messages::{Messages, NoticeColor, NOTICE_KEYS};
@@ -101,6 +102,20 @@ fn worker_count_above_max_is_rejected() {
 	let text = replace_line("worker_count", MAX_WORKER_COUNT + 1);
 	match load_text(&text) {
 		Err(ConfigError::Invalid { key, .. }) => assert_eq!(key, "worker.worker_count"),
+		other => panic!("unexpected: {other:?}"),
+	}
+}
+
+#[test]
+fn restore_stagger_above_max_is_rejected() {
+	let text = replace_line("stagger_ms", MAX_RESTORE_STAGGER_MS);
+	assert_eq!(
+		load_text(&text).unwrap().restore.stagger_ms,
+		MAX_RESTORE_STAGGER_MS
+	);
+	let text = replace_line("stagger_ms", MAX_RESTORE_STAGGER_MS + 1);
+	match load_text(&text) {
+		Err(ConfigError::Invalid { key, .. }) => assert_eq!(key, "restore.stagger_ms"),
 		other => panic!("unexpected: {other:?}"),
 	}
 }

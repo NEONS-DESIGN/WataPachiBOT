@@ -365,6 +365,36 @@ async fn leave_clears_queue_and_playback_state() {
 	assert!(env.queue_ids().is_empty());
 }
 
+/// `?replay` は保存した位置と一時停止の状態を先頭・再生中に書き直すこと
+/// (次の定期保存の前に再起動しても、前の位置や一時停止で復元しない)。
+#[tokio::test]
+async fn replay_resets_saved_position() {
+	let env = Env::new();
+	let a = vid('a');
+	play_one(&env, &a).await;
+	env.audio.set_position(Duration::from_secs(30));
+	env.send(GuildCommand::Pause);
+	wait_until("一時停止の保存", || {
+		env.playback()
+			.first()
+			.is_some_and(|state| state.paused && state.position_ms > 0)
+	})
+	.await;
+
+	env.send(GuildCommand::Replay);
+	wait_until("作り直した曲の通知", || {
+		env.count_notice("play.now_playing") == 2
+	})
+	.await;
+	env.barrier().await;
+	wait_until("位置の書き直し", || {
+		env.playback()
+			.first()
+			.is_some_and(|state| !state.paused && state.position_ms == 0)
+	})
+	.await;
+}
+
 #[tokio::test]
 async fn replay_creates_new_track_from_start() {
 	let env = Env::new();

@@ -155,8 +155,19 @@ def _pin_premium_status(premium: str) -> bool:
 		return False
 	is_premium = premium == PREMIUM_YES
 
-	def _is_premium_subscriber(self: Any, initial_data: Any) -> bool:
-		"""固定した判定。Args: initial_data は使わない。Returns: Premium として扱うなら True"""
+	def _is_premium_subscriber(self: Any, *args: Any, **kwargs: Any) -> bool:
+		"""
+		固定した判定。
+		- 引数 (今の yt-dlp では initial_data) は使わない。可変長で受け、yt-dlp の引数の変更で TypeError にしない
+
+		Args:
+			args: yt-dlp が渡す位置引数 (使わない)
+			kwargs: yt-dlp が渡すキーワード引数 (使わない)
+		Returns:
+			Premium として扱うなら True
+		Example:
+			YoutubeIE._is_premium_subscriber(ie, initial_data) -> True
+		"""
 		return is_premium and bool(self.is_authenticated)
 
 	YoutubeIE._is_premium_subscriber = _is_premium_subscriber

@@ -161,10 +161,8 @@ pub fn put_stream(c: &Connection, stream: &ResolvedStream) -> Result<(), DbError
 /// # エラー
 /// - SQLite のエラー
 pub fn delete_stream(c: &Connection, video_id: &VideoId) -> Result<(), DbError> {
-	c.execute(
-		"DELETE FROM resolve_cache WHERE video_id = ?1",
-		[&video_id.0],
-	)?;
+	c.prepare_cached("DELETE FROM resolve_cache WHERE video_id = ?1")?
+		.execute([&video_id.0])?;
 	Ok(())
 }
 
@@ -335,7 +333,8 @@ pub fn put_playlist(
 	fetch_limit: u32,
 	now: i64,
 ) -> Result<(), DbError> {
-	c.execute("DELETE FROM playlist_items WHERE url = ?1", [url])?;
+	c.prepare_cached("DELETE FROM playlist_items WHERE url = ?1")?
+		.execute([url])?;
 	c.prepare_cached(
 		"INSERT OR REPLACE INTO playlist_cache (url, title, fetched_at, fetch_limit)
 		 VALUES (?1, ?2, ?3, ?4)",

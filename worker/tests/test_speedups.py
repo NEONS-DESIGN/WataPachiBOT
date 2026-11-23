@@ -87,6 +87,11 @@ def install_fake_yt_dlp(monkeypatch: pytest.MonkeyPatch, *, internals: bool = Tr
 			"""Args: params は YoutubeDL のオプション"""
 			self.params = params
 
+		@functools.cached_property
+		def _request_director(self) -> Any:
+			"""実物と同じく cached_property にする (接続の張り直しの対象)。Returns: 新しい FakeDirector"""
+			return FakeDirector()
+
 		def extract_info(self, url: str, download: bool = False) -> dict[str, Any]:
 			"""Args: url は動画の URL。Returns: 固定の動画情報。Raises: FakeDownloadError"""
 			calls.append(self.params)
@@ -231,6 +236,18 @@ def test_premium_pin_is_skipped_on_auto(monkeypatch, deno_on_path):
 	assert speedups.stream_options(pinned, applied)["extractor_args"]["youtube"]["player_skip"] == [
 		"webpage", "configs", "initial_data",
 	]
+
+
+def test_premium_pin_accepts_any_arguments(monkeypatch, deno_on_path):
+	"""固定した判定は引数の数と名前によらず同じ結果を返す (yt-dlp の引数の変更で TypeError にしない)"""
+	fake = install_fake_yt_dlp(monkeypatch)
+	speedups.apply(speedups.SpeedupConfig(cookies="firefox", premium="yes"))
+	ie = fake.YoutubeIE(is_authenticated=True)
+	assert ie._is_premium_subscriber() is True
+	assert ie._is_premium_subscriber({"x": 1}) is True
+	assert ie._is_premium_subscriber({"x": 1}, "extra", initial_data=None, webpage="") is True
+	# ログインしていなければ yes でも Premium として扱わない
+	assert fake.YoutubeIE(is_authenticated=False)._is_premium_subscriber(initial_data={}) is False
 
 
 def test_cookie_dependent_client_is_used_only_with_cookies(monkeypatch, deno_on_path):
@@ -1167,6 +1184,56 @@ class FakeDirector:
 			raise RuntimeError("close failed")
 
 
+class CachedDirectorHolder:
+	"""_request_director を実物と同じく cached_property で持つ YoutubeDL の代用"""
+
+	@functools.cached_property
+	def _request_director(self) -> FakeDirector:
+		"""Returns: 新しい FakeDirector"""
+		return FakeDirector()
+
+
+class InheritedDirectorHolder(CachedDirectorHolder):
+	"""cached_property を親クラスから受け継ぐ YoutubeDL の代用 (MRO をたどることの確認用)"""
+
+
+class PlainDirectorHolder:
+	"""_request_director を通常の属性で持つ YoutubeDL の代用 (yt-dlp の将来の変更を想定する)"""
+
+	def __init__(self, director: FakeDirector) -> None:
+		"""Args: director はインスタンスの属性に置く接続"""
+		self._request_director = director
+
+
+def test_reset_closes_cached_property_director_including_inherited():
+	"""cached_property の接続は、親クラスで定義されていても取り除いて閉じる"""
+	import worker as worker_module
+
+	for holder_type in (CachedDirectorHolder, InheritedDirectorHolder):
+		instance = holder_type()
+		director = FakeDirector()
+		instance.__dict__["_request_director"] = director
+		worker_module.reset_connections([instance])
+		assert director.closed == 1
+		assert "_request_director" not in instance.__dict__
+		# 次の参照で作り直される
+		assert isinstance(instance._request_director, FakeDirector)
+
+
+def test_reset_skips_plain_attribute_director_and_logs_once(monkeypatch, capsys):
+	"""接続が通常の属性なら取り除かずに飛ばし (以降の通信を壊さない)、型ごとに 1 回だけ記録する"""
+	import worker as worker_module
+
+	monkeypatch.setattr(worker_module, "_unsupported_director_types", set())
+	director = FakeDirector()
+	instance = PlainDirectorHolder(director)
+	worker_module.reset_connections([instance])
+	worker_module.reset_connections([PlainDirectorHolder(FakeDirector())])
+	assert director.closed == 0
+	assert instance._request_director is director
+	assert capsys.readouterr().err.count("connection_reset: PlainDirectorHolder._request_director") == 1
+
+
 def worker_with_clock(monkeypatch: pytest.MonkeyPatch) -> tuple[Any, list[float]]:
 	"""
 	時計を差し替えた Worker を作る。返す list の先頭を書き換えると時刻が進む。
@@ -1275,7 +1342,7 @@ def test_fallback_thread_resets_its_own_instances(monkeypatch):
 
 	def install(state: dict) -> int:
 		"""実行スレッドの辞書に偽のインスタンスを置く"""
-		instance = types.SimpleNamespace()
+		instance = CachedDirectorHolder()
 		instance.__dict__["_request_director"] = director
 		state["x"] = instance
 		return 0
@@ -1322,6 +1389,64 @@ def test_fallback_memory_forgets_the_least_recently_used():
 	assert not memory.recall("b" * 11)
 	assert not memory.recall(None)
 	memory.forget("a" * 11)
+	assert not memory.recall("a" * 11)
+
+
+def test_fallback_memory_expires_entries():
+	"""覚えてから ttl_seconds 秒たった ID は無いものとして扱い、取り除く。recall では期限は延びず、remember で延びる"""
+	from fallback import FallbackMemory
+
+	ttl = 100.0
+	clock = [1000.0]
+	memory = FallbackMemory(4, ttl_seconds=ttl, clock=lambda: clock[0])
+	memory.remember("a" * 11)
+	memory.remember("b" * 11)
+	clock[0] += ttl - 1
+	assert memory.recall("a" * 11)
+	clock[0] += 1
+	# recall で期限は延びない
+	assert not memory.recall("a" * 11)
+	assert len(memory) == 0
+	# 覚え直すと期限も数え直す
+	memory.remember("a" * 11)
+	clock[0] += ttl - 1
+	memory.remember("a" * 11)
+	clock[0] += ttl - 1
+	assert memory.recall("a" * 11)
+	assert len(memory) == 1
+
+
+def test_fallback_memory_drops_expired_before_evicting_live_entries():
+	"""上限を超えるときは、期限切れを先に取り除き、期限内の ID を押し出さない"""
+	from fallback import FallbackMemory
+
+	ttl = 100.0
+	clock = [1000.0]
+	memory = FallbackMemory(2, ttl_seconds=ttl, clock=lambda: clock[0])
+	memory.remember("a" * 11)
+	clock[0] += ttl / 2
+	memory.remember("b" * 11)
+	clock[0] += ttl / 2 - 1
+	# a を最近使ったものにする (LRU の順は b、a)
+	assert memory.recall("a" * 11)
+	clock[0] += 1
+	# a だけが期限切れ。c を覚えると、最も長く使っていない b ではなく期限切れの a が消える
+	memory.remember("c" * 11)
+	assert len(memory) == 2
+	assert memory.recall("b" * 11) and memory.recall("c" * 11)
+	assert not memory.recall("a" * 11)
+
+
+def test_fallback_memory_default_ttl_is_the_module_constant():
+	"""期限の既定値はモジュールの定数"""
+	import fallback
+
+	clock = [0.0]
+	memory = fallback.FallbackMemory(1, clock=lambda: clock[0])
+	memory.remember("a" * 11)
+	clock[0] += fallback.FALLBACK_MEMORY_TTL_SECONDS - 1
+	assert memory.recall("a" * 11)
+	clock[0] += 1
 	assert not memory.recall("a" * 11)
 
 
@@ -1391,6 +1516,64 @@ def test_failed_direct_fallback_forgets_the_video(monkeypatch, deno_on_path):
 	with pytest.raises(FakeDownloadError):
 		worker.resolve(NOT_FOUND_VIDEO_URL, None)
 	assert "impersonate" not in fake.calls[0]
+
+
+def test_remembered_video_expires_and_retries_main_path(monkeypatch, deno_on_path):
+	"""覚えた動画も期限を過ぎたら直接回さず、主経路から試し直す (期限は worker の _now で数える)"""
+	fake = install_first_fails(monkeypatch, NOT_FOUND_MESSAGE)
+	import fallback
+	import worker as worker_module
+
+	clock = [1000.0]
+	monkeypatch.setattr(worker_module, "_now", lambda: clock[0])
+	worker = worker_module.Worker(worker_module.build_options("cache", "firefox", None))
+	worker.resolve(NOT_FOUND_VIDEO_URL, None)
+	fake.calls.clear()
+	clock[0] += fallback.FALLBACK_MEMORY_TTL_SECONDS - 1
+	worker.resolve(NOT_FOUND_VIDEO_URL, None)
+	assert len(fake.calls) == 1 and "impersonate" in fake.calls[0]
+	fake.calls.clear()
+	clock[0] += 1
+	worker.resolve(NOT_FOUND_VIDEO_URL, None)
+	assert len(fake.calls) == 2
+	assert "impersonate" not in fake.calls[0]
+
+
+@pytest.mark.parametrize(
+	"cookies,first,fallback,code",
+	[
+		# Cookie ありの not_found は当てにならないため、予備設定の具体的な理由を使う
+		("firefox", NOT_FOUND_MESSAGE, "Private video", "private"),
+		("firefox", NOT_FOUND_MESSAGE, "Sign in to confirm your age", "age_restricted"),
+		("firefox", NOT_FOUND_MESSAGE, "Sign in to confirm you're not a bot", "rate_limited"),
+		("firefox", NOT_FOUND_MESSAGE, "The uploader has not made this video available in your country", "geo_blocked"),
+		# 予備設定の理由が具体的でなければ not_found のまま
+		("firefox", NOT_FOUND_MESSAGE, "HTTP Error 403: Forbidden", "not_found"),
+		("firefox", NOT_FOUND_MESSAGE, "Video unavailable", "not_found"),
+		# not_found 以外の主経路の理由 (ボット判定) は今までどおり優先する
+		("firefox", "Sign in to confirm you're not a bot", "Private video", "rate_limited"),
+		(None, "Sign in to confirm you're not a bot", "Private video", "rate_limited"),
+	],
+)
+def test_unreliable_not_found_prefers_specific_fallback_reason(monkeypatch, deno_on_path, cookies, first, fallback, code):
+	"""両方失敗したとき、主経路が Cookie ありの not_found なら予備設定の具体的な理由で分類する"""
+	fake = install_fake_yt_dlp(monkeypatch)
+	from worker import FallbackFailedError, Worker, build_options, error_response
+
+	def always_fail(self: Any, url: str, download: bool = False) -> dict[str, Any]:
+		"""Raises: 設定ごとに異なる FakeDownloadError"""
+		fake.calls.append(self.params)
+		raise FakeDownloadError(fallback if "impersonate" in self.params else first)
+
+	monkeypatch.setattr(fake.YoutubeDL, "extract_info", always_fail)
+	worker = Worker(build_options("cache", cookies, None))
+	with pytest.raises(FallbackFailedError) as caught:
+		worker.resolve(NOT_FOUND_VIDEO_URL, None)
+	assert len(fake.calls) == 2
+	response = error_response(1, caught.value)
+	assert response["error"]["code"] == code
+	# 文言は主経路の理由を先頭に置いたまま
+	assert response["error"]["message"].startswith(first)
 
 
 def test_standard_providers_wait_for_enough_budget(monkeypatch):

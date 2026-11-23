@@ -445,19 +445,36 @@ fn forget_pending(inner: &Weak<Inner>, guild: GuildId) {
 	}
 }
 
+/// パラメータの無い 1 文を、接続の文のキャッシュを使って実行する。
+///
+/// # 引数
+/// - `conn`: 接続
+/// - `sql`: 1 文の SQL
+///
+/// # エラー
+/// - SQLite のエラー
+///
+/// # 例
+/// `execute_cached(conn, "RELEASE cmd")?;`
+fn execute_cached(conn: &Connection, sql: &str) -> rusqlite::Result<()> {
+	conn.prepare_cached(sql)?.execute([])?;
+	Ok(())
+}
+
 /// 1 件の処理を SAVEPOINT で囲んで実行する。
 ///
 /// - 失敗または panic のときはその処理だけ巻き戻す
 /// - 戻り値は結果の通知処理。panic、SAVEPOINT の開始失敗、RELEASE 失敗では None
 ///   （呼び出し側は通知を受けられず WriterClosed になる）
 fn run_in_savepoint(conn: &Connection, job: Job) -> Option<Deliver> {
-	if conn.execute_batch("SAVEPOINT cmd").is_err() {
+	// SAVEPOINT と RELEASE は書き込みのたびに通るため、準備済みの文を使い回す
+	if execute_cached(conn, "SAVEPOINT cmd").is_err() {
 		return None;
 	}
 	let outcome = catch_unwind(AssertUnwindSafe(|| job(conn))).ok();
 	let ok = matches!(outcome, Some((true, _)));
 	if ok {
-		match conn.execute_batch("RELEASE cmd") {
+		match execute_cached(conn, "RELEASE cmd") {
 			Ok(()) => return outcome.map(|(_, deliver)| deliver),
 			Err(error) => tracing::error!(%error, "SAVEPOINT の解放に失敗しました"),
 		}

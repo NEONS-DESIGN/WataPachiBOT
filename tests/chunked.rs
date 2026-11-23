@@ -15,7 +15,7 @@ use async_trait::async_trait;
 use songbird::input::{AsyncAdapterStream, Compose};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use watapachi_bot::audio::chunked::{
-	ChunkConfig, ChunkError, ChunkedRequest, ChunkedStream, UrlRefresher,
+	ChunkConfig, ChunkError, ChunkedRequest, ChunkedStream, UrlRefresher, EXPIRY_RECHECK_INTERVAL,
 };
 use watapachi_bot::domain::{ResolveError, ResolvedStream, VideoId};
 
@@ -61,6 +61,7 @@ fn config(chunk_size: u64) -> ChunkConfig {
 		attempts: 3,
 		refresh_margin: Duration::from_secs(300),
 		available_wait_max: Duration::from_secs(60),
+		expiry_recheck_interval: EXPIRY_RECHECK_INTERVAL,
 	}
 }
 
@@ -561,6 +562,7 @@ async fn hung_server_times_out() {
 			attempts: 2,
 			refresh_margin: Duration::from_secs(300),
 			available_wait_max: Duration::from_secs(60),
+			expiry_recheck_interval: EXPIRY_RECHECK_INTERVAL,
 		},
 	);
 	let began = Instant::now();
@@ -999,6 +1001,48 @@ async fn early_refresh_with_future_available_at_keeps_current_url_until_ready() 
 	assert_eq!(last.range, Some((2000, 2999)));
 	assert!(last.at >= limit);
 	assert_eq!(refresher.calls(), 1, "差し替えで取り直しを重ねない");
+}
+
+/// 取り直した取得先を預けている間は、確認の間隔を過ぎても期限前の取り直しを重ねず、
+/// 時刻が来たら差し替えた URL の期限で判定すること (預けた取得先を上書きし続けて差し替えが起きない不具合の再発防止)。
+#[tokio::test]
+async fn early_refresh_is_not_repeated_while_source_is_pending() {
+	let bytes = data(4000);
+	let server = RangeServer::start(bytes.clone()).await;
+	let available_at = now() + 2;
+	let mut fresh = resolved_available(server.url("/b"), 4000, Some(available_at));
+	fresh.expires_at = Some(now() + 100_000);
+	let refresher = FakeRefresher::new(Some(fresh));
+	let mut stream = open(
+		resolved(server.url("/a"), 4000, Some(now() + 10)),
+		Arc::clone(&refresher),
+		ChunkConfig {
+			expiry_recheck_interval: Duration::ZERO,
+			..config(1000)
+		},
+	);
+	// 1 つ目のチャンクで取り直して預け、2 つ目のチャンクは預けたまま今の URL で読む
+	let mut head = vec![0u8; 1500];
+	stream.read_exact(&mut head).await.unwrap();
+	assert_eq!(head, bytes[..1500]);
+	assert_eq!(refresher.calls(), 1, "預けている間に取り直した");
+
+	// 時刻が来たら差し替え、新しい URL の期限には余裕があるため取り直さない
+	let limit = UNIX_EPOCH + Duration::from_secs(available_at as u64);
+	while SystemTime::now() < limit + Duration::from_millis(200) {
+		tokio::time::sleep(Duration::from_millis(100)).await;
+	}
+	stream.seek(SeekFrom::Start(3000)).await.unwrap();
+	let mut tail = vec![0u8; 100];
+	stream.read_exact(&mut tail).await.unwrap();
+	assert_eq!(tail, bytes[3000..3100]);
+	let requests = server.requests();
+	assert_eq!(
+		requests.last().unwrap().path,
+		"/b",
+		"差し替えていない: {requests:?}"
+	);
+	assert_eq!(refresher.calls(), 1, "差し替えた後に取り直した");
 }
 
 /// 恒久的な 4xx (404) は再試行せず、その場で失敗すること。

@@ -155,6 +155,12 @@ pub async fn run_shard(
 					last_close = frame.as_ref().map(|frame| frame.code);
 					tracing::info!(code = ?last_close, "Gateway の接続が閉じられました");
 				}
+				// 新しいセッション (再開できない再接続を含む) の Ready では、キャッシュを空にしてから作り直す。
+				// twilight のキャッシュは GuildCreate でボイスの状態を消さないため、切れていた間に抜けた人が
+				// 聴者として残り続ける。Ready の後に全ギルドの GuildCreate が届くため、空にしても作り直される
+				if matches!(event, Event::Ready(_)) {
+					cache.clear();
+				}
 				cache.update(&event);
 				let processed = tokio::time::timeout(songbird_timeout, songbird.process(&event)).await;
 				if processed.is_err() {

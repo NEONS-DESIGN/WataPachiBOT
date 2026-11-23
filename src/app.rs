@@ -216,8 +216,7 @@ pub async fn run(paths: AppPaths) -> anyhow::Result<()> {
 /// app::run_with(AppPaths::standard(), RunMode::Console).await?;
 /// ```
 pub async fn run_with(paths: AppPaths, mode: RunMode) -> anyhow::Result<()> {
-	// 失敗は既に入っている (別の箇所が先に入れた) 場合だけのため無視する
-	let _ = rustls::crypto::ring::default_provider().install_default();
+	install_crypto_provider();
 
 	let token = read_token(&paths.env)?;
 	let config = Config::load(&paths.config)
@@ -550,12 +549,7 @@ fn start_scheduler(
 	python: &Path,
 ) -> (watch::Sender<bool>, JoinHandle<()>) {
 	let template = worker_spec(config, python);
-	let tools = UvTools::from_config(config, template.clone(), Arc::clone(job));
-	let updater = Updater::new(
-		EnvStore::new(&config.paths.worker_envs).keep_python(&config.paths.worker_python),
-		Arc::new(tools),
-		config.update.recycle_workers_daily,
-	);
+	let updater = build_updater(config, template.clone(), Arc::clone(job));
 	let switch = LiveSwitch {
 		pool: Arc::clone(pool),
 		template,
@@ -942,8 +936,7 @@ const OUTCOME_STOPPED: &str = "途中で終了しました。現在の環境は�
 /// # 例
 /// `let outcome = update_worker(AppPaths::standard()).await?;`
 pub async fn update_worker(paths: AppPaths) -> anyhow::Result<UpdateOutcome> {
-	// 失敗は既に入っている場合だけのため無視する
-	let _ = rustls::crypto::ring::default_provider().install_default();
+	install_crypto_provider();
 
 	let config = Config::load(&paths.config)
 		.with_context(|| format!("設定を読めません: {}", paths.config.display()))?;
@@ -958,15 +951,41 @@ pub async fn update_worker(paths: AppPaths) -> anyhow::Result<UpdateOutcome> {
 	let job = Arc::new(Job::new().context("Job Object を作れません")?);
 
 	let template = worker_spec(&config, &config.paths.worker_python);
-	let tools = UvTools::from_config(&config, template, job);
-	let updater = Updater::new(
-		EnvStore::new(&config.paths.worker_envs).keep_python(&config.paths.worker_python),
-		Arc::new(tools),
-		config.update.recycle_workers_daily,
-	);
+	let updater = build_updater(&config, template, job);
 	let outcome = updater.run(None, jiff::ZonedDateTime::now()).await;
 	tracing::info!(?outcome, "update-worker を終えました");
 	Ok(outcome)
+}
+
+/// rustls の暗号プロバイダを ring に決める。Discord や YouTube への通信の前に呼ぶ。
+///
+/// - 失敗は既に入っている (別の箇所が先に入れた) 場合だけのため無視する
+///
+/// # 例
+/// `install_crypto_provider();`
+fn install_crypto_provider() {
+	let _ = rustls::crypto::ring::default_provider().install_default();
+}
+
+/// ワーカーの環境の更新役を作る。常駐の Scheduler と `update-worker` で同じ組み立てを使う。
+///
+/// # 引数
+/// - `config`: 設定全体 (環境の置き場所、残す Python、毎日の入れ替えの有無)
+/// - `template`: 検査用のワーカーの起動の雛形
+/// - `job`: 起動する子プロセスを入れる Job Object
+///
+/// # 戻り値
+/// 更新役
+///
+/// # 例
+/// `let updater = build_updater(&config, worker_spec(&config, python), job);`
+fn build_updater(config: &Config, template: WorkerSpec, job: Arc<Job>) -> Updater {
+	let tools = UvTools::from_config(config, template, job);
+	Updater::new(
+		EnvStore::new(&config.paths.worker_envs).keep_python(&config.paths.worker_python),
+		Arc::new(tools),
+		config.update.recycle_workers_daily,
+	)
 }
 
 /// `UpdateOutcome` を運用者向けの 1 行にする (純粋)。

@@ -3,9 +3,13 @@
 //! - 通知は `notice_embed` で Embed にして送る。本文に置いた利用者のメンションは Embed の中なので通知音を鳴らさない
 //! - カードは、送る時点のキャッシュからリクエストした人の名前とアイコンを引いてフッターに出す
 //! - Discord がカードを拒んだら (400 の応答、送る前の検査の失敗)、旧 Bot と同じ簡易表示で送り直す
-//! - 送信のタイムアウトと再試行は twilight-http に任せる。失敗は warn のログを残し、None / false を返す
+//! - 再試行は twilight-http に任せる。twilight-http の時間切れは HTTP の要求だけに掛かり、
+//!   レート制限の待ちと 429 の後の再送には掛からないため、送信 1 回の全体を `SEND_TIMEOUT` で打ち切る
+//! - 失敗は warn のログを残し、None / false を返す
 
+use std::future::IntoFuture;
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use twilight_cache_inmemory::DefaultInMemoryCache;
@@ -22,6 +26,28 @@ use crate::guild::notifier::{MessageRef, Notice, Notifier};
 use crate::lang::GuildLangs;
 use crate::messages::{MessageCatalog, Messages};
 use crate::ui::embed::{card_fallback_embed, notice_embed};
+
+/// Discord への送信 1 回 (レート制限の待ちと再送を含む) を待つ上限。設定項目に無いため固定値にする。
+/// - 混雑で 429 が続いても、返信やボタンの差し替えのタスクが溜まり続けないようにする
+pub const SEND_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Discord への送信を `SEND_TIMEOUT` で打ち切る。
+///
+/// # 引数
+/// - `request`: twilight-http の要求 (送信から本文の受信まで)
+///
+/// # 戻り値
+/// 上限までに終われば要求の結果。過ぎたら None
+///
+/// # 呼び出し例
+/// ```ignore
+/// let Some(result) = within_send_timeout(self.http.create_message(channel)).await else { ... };
+/// ```
+pub async fn within_send_timeout<T>(request: impl IntoFuture<Output = T>) -> Option<T> {
+	tokio::time::timeout(SEND_TIMEOUT, request.into_future())
+		.await
+		.ok()
+}
 
 /// 送信や編集の結果。
 enum Delivery {
@@ -163,11 +189,18 @@ impl DiscordNotifier {
 	/// notifier.set_components(target, &disabled).await;
 	/// ```
 	pub async fn set_components(&self, target: MessageRef, components: &[Component]) -> bool {
-		let result = self
+		let request = self
 			.http
 			.update_message(target.channel, target.message)
-			.components(Some(components))
-			.await;
+			.components(Some(components));
+		let Some(result) = within_send_timeout(request).await else {
+			tracing::debug!(
+				channel = target.channel.get(),
+				message = target.message.get(),
+				"ボタンの差し替えが上限時間を過ぎました"
+			);
+			return false;
+		};
 		match result {
 			Ok(_) => true,
 			Err(error) => {
@@ -189,14 +222,28 @@ impl DiscordNotifier {
 		if !components.is_empty() {
 			request = request.components(components);
 		}
-		let response = match request.await {
-			Ok(response) => response,
+		let sent = within_send_timeout(async {
+			match request.await {
+				Ok(response) => Ok(response.model().await),
+				Err(error) => Err(error),
+			}
+		})
+		.await;
+		let Some(sent) = sent else {
+			tracing::warn!(
+				channel = channel.get(),
+				"メッセージの送信が上限時間を過ぎました"
+			);
+			return Delivery::Failed;
+		};
+		let model = match sent {
+			Ok(model) => model,
 			Err(error) => {
 				tracing::warn!(channel = channel.get(), %error, "メッセージを送れませんでした");
 				return classify(&error);
 			}
 		};
-		match response.model().await {
+		match model {
 			Ok(message) => Delivery::Done(Some(MessageRef {
 				channel,
 				message: message.id,
@@ -211,11 +258,18 @@ impl DiscordNotifier {
 	/// 送信済みのメッセージの Embed を書き換え、結果を分類する。失敗は warn のログを残す。
 	async fn patch(&self, target: MessageRef, embed: Embed) -> Delivery {
 		let embeds = [embed];
-		let result = self
+		let request = self
 			.http
 			.update_message(target.channel, target.message)
-			.embeds(Some(&embeds))
-			.await;
+			.embeds(Some(&embeds));
+		let Some(result) = within_send_timeout(request).await else {
+			tracing::warn!(
+				channel = target.channel.get(),
+				message = target.message.get(),
+				"メッセージの編集が上限時間を過ぎました"
+			);
+			return Delivery::Failed;
+		};
 		match result {
 			Ok(_) => Delivery::Done(None),
 			Err(error) => {

@@ -18,7 +18,7 @@ use std::time::Duration;
 use tokio::time::Instant;
 
 use super::supervise::Trigger;
-use super::{GuildActor, Next};
+use super::GuildActor;
 use crate::db::{playback, settings};
 use crate::domain::ChannelId;
 use crate::guild::message::{ClearRange, CommandContext, GuildCommand};
@@ -250,6 +250,8 @@ impl GuildActor {
 	/// - 再生を始めた曲 (Playing / Paused) だけが対象。解決中の曲はもともと先頭から始まるため対象外
 	/// - 世代を進めるので、止めた曲の終了のイベントや古い解決結果は捨てられる
 	/// - 再生できなければ、通常の再生の失敗と同じく曲を飛ばして次の曲へ進む
+	/// - `playback_state` の位置を先頭・一時停止なしに書き直す (`start_track` は書かないため。
+	///   書かないと、次の定期保存の前に再起動したとき前の位置や一時停止の状態で復元される)
 	///
 	/// # 引数
 	/// - `reply`: 応答先
@@ -270,9 +272,9 @@ impl GuildActor {
 			return;
 		};
 		self.stop_playback().await;
-		if self.start_track(item).await == Next::Advance {
-			self.start_next().await;
-		}
+		self.persist_position(Duration::ZERO, false).await;
+		let next = self.start_track(item).await;
+		self.advance_if(next).await;
 	}
 
 	/// `?skip`: 今の曲を飛ばして次の曲を始める。
@@ -343,9 +345,8 @@ impl GuildActor {
 		if started {
 			self.stop_playback().await;
 		}
-		if self.start_track(chosen).await == Next::Advance {
-			self.start_next().await;
-		}
+		let next = self.start_track(chosen).await;
+		self.advance_if(next).await;
 	}
 
 	/// `?clear`: キューの曲を消す (全件、先頭 N 件、範囲)。今の曲は消さない。

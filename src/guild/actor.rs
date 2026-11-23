@@ -17,6 +17,7 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
@@ -112,6 +113,7 @@ pub(crate) fn spawn(
 		pending_restore: None,
 		tasks: JoinSet::new(),
 		task_kinds: HashMap::new(),
+		connect_cancel: Arc::new(AtomicBool::new(false)),
 	};
 	tokio::spawn(actor.run());
 	tx
@@ -304,6 +306,9 @@ struct GuildActor {
 	tasks: JoinSet<()>,
 	/// 起動中の処理の種類と、個別に止めるためのハンドル
 	task_kinds: HashMap<Id, (TaskKind, AbortHandle)>,
+	/// 最後に起動した接続のタスクの取り消しの印。立てると、まだ参加を始めていない接続を始めない
+	/// (接続のタスクは止めずに残すため、回復の切断の間に退出しても入り直さないようにする)
+	connect_cancel: Arc<AtomicBool>,
 }
 
 impl GuildActor {
@@ -514,6 +519,8 @@ impl GuildActor {
 	/// - 接続は `VoiceLimits::connect` で打ち切る (バックエンドの参加の時間切れと Call の削除が先に終わる長さ)
 	/// - `previous` があれば、同じタスクの中で先に切断してから接続する (切断と接続の順を保ち、アクターは待たない)。
 	///   切断は `VoiceLimits::disconnect` で打ち切り、失敗はログに残すだけ
+	/// - 参加を始める前に取り消しの印 (`connect_cancel`) が立っていたら接続せず、
+	///   `AudioError::NotConnected` を返す (`on_connected` が古い結果として捨てる)
 	/// - セッションの始めと、回復の再接続で使う (回復ではセッションの番号を変えない)
 	///
 	/// # 引数
@@ -531,9 +538,17 @@ impl GuildActor {
 		let events = self.tx.clone();
 		let limit = self.voice_limits().connect();
 		let disconnect_limit = self.voice_limits().disconnect();
+		let cancel = Arc::new(AtomicBool::new(false));
+		self.connect_cancel = Arc::clone(&cancel);
 		self.spawn_task(TaskKind::Connect(session), async move {
 			if let Some(previous) = previous {
 				disconnect_within(guild, disconnect_limit, previous).await;
+			}
+			if cancel.load(Ordering::Acquire) {
+				return GuildMessage::Connected {
+					session,
+					result: Err(AudioError::NotConnected),
+				};
 			}
 			let result = with_timeout(limit, audio.connect(guild, channel, events)).await;
 			GuildMessage::Connected {
@@ -832,6 +847,43 @@ impl GuildActor {
 		}
 	}
 
+	/// 処理の結果が `Next::Advance` なら次の曲へ進む。`Next::Stay` なら何もしない。
+	///
+	/// - 曲を飛ばしうる処理 (`start_track`、`play_stream`、`skip_or_halt` など) の後は、必ずこれを通す
+	///
+	/// # 引数
+	/// - `next`: 処理の結果
+	///
+	/// # 呼び出し例
+	/// ```ignore
+	/// let next = self.start_track(item).await;
+	/// self.advance_if(next).await;
+	/// ```
+	pub(super) async fn advance_if(&mut self, next: Next) {
+		if next == Next::Advance {
+			self.start_next().await;
+		}
+	}
+
+	/// 解決できた今の曲の再生を始める。曲を飛ばしたら次の曲へ進む。
+	///
+	/// - 解決の失敗の数え方 (`attempts`) に成功を記録してから再生する
+	///
+	/// # 引数
+	/// - `stream`: 今の曲の解決結果 (解決の結果、または先読みの結果)
+	///
+	/// # 呼び出し例
+	/// ```ignore
+	/// self.play_resolved(stream).await;
+	/// ```
+	async fn play_resolved(&mut self, stream: ResolvedStream) {
+		if let Some(current) = self.current.as_mut() {
+			current.attempts.on_resolved();
+		}
+		let next = self.play_stream(stream).await;
+		self.advance_if(next).await;
+	}
+
 	/// キューの先頭を次の曲にして再生を始める。
 	///
 	/// - 取り出しと `playback_state` の書き込みは 1 トランザクション
@@ -940,7 +992,7 @@ impl GuildActor {
 	///
 	/// # 呼び出し例
 	/// ```ignore
-	/// if self.start_track(item).await == Next::Advance { self.start_next().await; }
+	/// let next = self.start_track(item).await; self.advance_if(next).await;
 	/// ```
 	async fn start_track(&mut self, item: NewQueueItem) -> Next {
 		let video_id = item.video_id.clone();
@@ -1031,7 +1083,7 @@ impl GuildActor {
 	///
 	/// # 呼び出し例
 	/// ```ignore
-	/// if self.play_stream(stream).await == Next::Advance { self.start_next().await; }
+	/// let next = self.play_stream(stream).await; self.advance_if(next).await;
 	/// ```
 	async fn play_stream(&mut self, stream: ResolvedStream) -> Next {
 		// 検索やプレイリストで入った曲は、解決して初めてライブ配信と分かる。曲に固有の理由として飛ばす
@@ -1158,19 +1210,22 @@ impl GuildActor {
 			.await
 	}
 
-	/// 今の曲を飛ばす。曲名を添えて通知する。
+	/// 今の曲から外した曲を、飛ばしたこととして曲名を添えて通知し、今の曲を空にする。
 	///
 	/// - 取得の不調による飛ばしの連続を数える場面では `skip_or_halt` を使う
+	/// - 外した曲の記録 (履歴、ループ) は呼び出し側が決める
 	///
 	/// # 引数
 	/// - `key`: 通知のキー (理由ごとの文面。曲名を差し込む)
+	/// - `skipped`: 今の曲から外した曲 (`self.current.take()` の値)。None なら通知しない
 	///
 	/// # 呼び出し例
 	/// ```ignore
-	/// self.skip_current(keys::TRACK_SKIPPED);
+	/// let skipped = self.current.take();
+	/// self.skip_current(keys::TRACK_SKIPPED, skipped.as_ref());
 	/// ```
-	fn skip_current(&mut self, key: &'static str) {
-		if let (Some(current), Some(channels)) = (&self.current, self.channels) {
+	pub(super) fn skip_current(&mut self, key: &'static str, skipped: Option<&CurrentTrack>) {
+		if let (Some(current), Some(channels)) = (skipped, self.channels) {
 			self.notify(channels.text, titled_code(key, &current.item.title));
 		}
 		self.set_current(None);
@@ -1246,17 +1301,12 @@ impl GuildActor {
 			);
 			return;
 		}
-		let next = match result {
-			Ok(stream) => {
-				if let Some(current) = self.current.as_mut() {
-					current.attempts.on_resolved();
-				}
-				self.play_stream(stream).await
+		match result {
+			Ok(stream) => self.play_resolved(stream).await,
+			Err(error) => {
+				let next = self.on_resolve_failed(&error).await;
+				self.advance_if(next).await;
 			}
-			Err(error) => self.on_resolve_failed(&error).await,
-		};
-		if next == Next::Advance {
-			self.start_next().await;
 		}
 	}
 
@@ -1297,12 +1347,7 @@ impl GuildActor {
 			// 今の曲が同じ曲の解決を待っていれば、その解決を待たずに先読みの結果で始める。
 			// 遅れて届く今の曲の解決結果は、再生を始めた後なので捨てられる
 			if let Some(stream) = self.prefetch.take_stream(&video_id) {
-				if let Some(current) = self.current.as_mut() {
-					current.attempts.on_resolved();
-				}
-				if self.play_stream(stream).await == Next::Advance {
-					self.start_next().await;
-				}
+				self.play_resolved(stream).await;
 				return;
 			}
 		}
@@ -1502,7 +1547,7 @@ impl GuildActor {
 		self.finish_and_start_next(finished).await;
 	}
 
-	/// 終えた曲を記録するだけで、次の曲は取り出さない (セッションの宛先が無いとき)。
+	/// 終えた曲を記録するだけで、次の曲は取り出さない (セッションの宛先が無いとき、曲に固有でない理由で飛ばしたとき)。
 	///
 	/// - 再生を始めていた曲だけを履歴に記録する
 	/// - ループ中ならキューの末尾へ戻す (飛ばした曲も戻す)
@@ -1515,7 +1560,7 @@ impl GuildActor {
 	/// ```ignore
 	/// self.record_finished(finished).await;
 	/// ```
-	async fn record_finished(&mut self, finished: CurrentTrack) {
+	pub(super) async fn record_finished(&mut self, finished: CurrentTrack) {
 		let settings = self.settings().await;
 		let guild = self.guild;
 		let played_at = finished.started_at;
@@ -1713,12 +1758,14 @@ impl GuildActor {
 	///
 	/// - 接続は止めない。Songbird の参加は future を捨てても続くため、止めると Bot がチャンネルに残る。
 	///   遅れて届いた接続は `on_connected` が古い接続として切断する
+	/// - 代わりに接続の取り消しの印を立て、まだ参加を始めていない接続 (回復の切断の途中など) は始めさせない
 	///
 	/// # 呼び出し例
 	/// ```ignore
 	/// self.abort_session_tasks();
 	/// ```
 	fn abort_session_tasks(&mut self) {
+		self.connect_cancel.store(true, Ordering::Release);
 		for (kind, handle) in self.task_kinds.values() {
 			if !matches!(kind, TaskKind::Connect(_)) {
 				handle.abort();

@@ -13,7 +13,9 @@
 use std::io;
 use std::ptr;
 
-use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE};
+use windows_sys::Win32::Foundation::{
+	CloseHandle, GetLastError, ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, HANDLE,
+};
 use windows_sys::Win32::System::Threading::CreateMutexW;
 
 /// 製品名の固定値。設定にしない。
@@ -78,6 +80,8 @@ impl SingleInstance {
 	///
 	/// # エラー
 	/// - 同名のミューテックスが既にある場合は `AlreadyRunning`
+	/// - 別のアカウント (サービスなど) が作った同名のミューテックスを開く権利が無い場合も `AlreadyRunning`
+	///   (`Global\` の名前は全セッションで共有され、既定の権限では他のアカウントから開けないため)
 	/// - OS が作成を拒否した場合は `Os`
 	///
 	/// # 例
@@ -87,7 +91,11 @@ impl SingleInstance {
 		// SAFETY: wide は NUL 終端の有効な UTF-16。セキュリティ属性は既定 (null)
 		let handle = unsafe { CreateMutexW(ptr::null(), 0, wide.as_ptr()) };
 		if handle.is_null() {
-			return Err(SingleInstanceError::Os(io::Error::last_os_error()));
+			let error = io::Error::last_os_error();
+			if error.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) {
+				return Err(SingleInstanceError::AlreadyRunning);
+			}
+			return Err(SingleInstanceError::Os(error));
 		}
 		// SAFETY: 直前の API 呼び出しのエラーを読む。間に他の Win32 呼び出しを挟まない
 		let already = unsafe { GetLastError() } == ERROR_ALREADY_EXISTS;

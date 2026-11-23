@@ -19,6 +19,7 @@ yt-dlp 常駐ワーカー。
 """
 import argparse
 import contextlib
+import functools
 import json
 import os
 import queue
@@ -96,8 +97,33 @@ MIX_CONTENTS_PATH = ("contents", "twoColumnWatchNextResults", "playlist", "playl
 MIX_VIDEO_RENDERER = "playlistPanelVideoRenderer"
 MIX_VIDEO_ID_KEY = "videoId"
 
-# 放置の判定に使う時計。試験で差し替える
+# 放置の判定と、予備設定へ直接回す動画の期限の判定に使う時計。試験で差し替える
 _now: Callable[[], float] = time.monotonic
+
+# YoutubeDL の HTTP の接続を持つ内部属性の名前 (yt-dlp では functools.cached_property)
+REQUEST_DIRECTOR_ATTRIBUTE = "_request_director"
+# 接続を持つ属性が cached_property でなかった型。記録を型ごとに 1 回にする (要求のたびに出さない)
+_unsupported_director_types: set[type] = set()
+
+
+def _director_is_cached_property(instance: Any) -> bool:
+	"""
+	インスタンスの型 (MRO をたどる) で、接続を持つ属性が functools.cached_property として定義されているかを返す。
+	- cached_property なら、インスタンスの __dict__ から取り除くと次の参照で作り直される。
+		それ以外 (通常の属性など) を取り除くと、以降の通信がすべて失敗するため取り除かない
+
+	Args:
+		instance: YoutubeDL のインスタンス
+	Returns:
+		最初に定義が見つかったクラスで cached_property なら True。定義が無い、または別の種類なら False
+	Example:
+		_director_is_cached_property(worker.stream) -> True
+	"""
+	for klass in type(instance).__mro__:
+		definition = vars(klass).get(REQUEST_DIRECTOR_ATTRIBUTE)
+		if definition is not None:
+			return isinstance(definition, functools.cached_property)
+	return False
 
 
 def reset_connections(instances: list[Any]) -> None:
@@ -105,6 +131,8 @@ def reset_connections(instances: list[Any]) -> None:
 	YoutubeDL の HTTP の接続 (request director) を閉じる。次の通信で yt-dlp が作り直す。
 	- YoutubeDL.close は JS チャレンジと PO Token の仕組みまで閉じるため使わず、接続だけを閉じる
 	- yt-dlp の内部属性 (_request_director は cached_property) に依存する。失敗しても要求は続け、標準エラーへ記録する
+	- 型の定義が cached_property でなければ閉じずに飛ばし、型ごとに 1 回だけ標準エラーへ記録する
+		(yt-dlp の変更で通常の属性になった場合に取り除くと、以降の通信がすべて失敗するため)
 	- 同じインスタンスが複数回含まれていても 1 回だけ閉じる
 
 	Args:
@@ -120,7 +148,16 @@ def reset_connections(instances: list[Any]) -> None:
 			continue
 		seen.add(id(instance))
 		try:
-			director = instance.__dict__.pop("_request_director", None)
+			if not _director_is_cached_property(instance):
+				instance_type = type(instance)
+				if instance_type not in _unsupported_director_types:
+					_unsupported_director_types.add(instance_type)
+					speedups.log(
+						f"connection_reset: {instance_type.__name__}.{REQUEST_DIRECTOR_ATTRIBUTE} が"
+						" cached_property でないため閉じない"
+					)
+				continue
+			director = instance.__dict__.pop(REQUEST_DIRECTOR_ATTRIBUTE, None)
 			if director is not None:
 				director.close()
 		except Exception as error:  # 接続を閉じられなくても要求は続ける (古い接続で遅くなるだけ)
@@ -132,6 +169,10 @@ ALLOWED_EXTRACTORS = (r"(?i)youtube(:.*)?", r"(?i)youtubeytbe")
 
 # 応答のエラーメッセージの最大文字数
 MAX_ERROR_MESSAGE_CHARS = 500
+
+# 通常の設定の理由が当てにならない (Cookie ありの not_found) とき、予備設定の理由を優先する分類
+# (not_found より具体的な理由。internal と not_found は通常の設定の not_found のままにする)
+SPECIFIC_FALLBACK_CODES: frozenset[str] = frozenset(("private", "age_restricted", "rate_limited", "geo_blocked"))
 
 # flat_playlist と search の既定の件数
 DEFAULT_PLAYLIST_LIMIT = 5000
@@ -597,8 +638,8 @@ class Worker:
 		# 前の要求の後に、すでに一度温めたか。温めは放置 1 回につき 1 回にする
 		# (温め直しを続けると、使われない間も YouTube へ定期的に通信し続けるため)
 		self._rewarmed = False
-		# 主経路を飛ばして予備設定へ直接回す動画
-		self._fallback_memory = FallbackMemory(FALLBACK_MEMORY_SIZE)
+		# 主経路を飛ばして予備設定へ直接回す動画。期限の判定は _now で行う (試験で時計を差し替えられるよう、呼ぶたびに引く)
+		self._fallback_memory = FallbackMemory(FALLBACK_MEMORY_SIZE, clock=lambda: _now())
 		# 予備設定のインスタンスは実行スレッドの中で作り、そのスレッドの辞書に形式ごとに持つ
 		self._fallback_runner = BoundedRunner(FALLBACK_THREAD_NAME)
 		self._fallback_base: dict[str, Any] | None = None
@@ -727,7 +768,8 @@ class Worker:
 		- 予備設定の取得は今の要求の持ち時間の残りで打ち切る。残りが FALLBACK_MIN_SECONDS 未満なら取り直さない
 		- Cookie ありの not_found から予備設定で解決できた動画は FallbackMemory に覚え、次からは主経路を飛ばして
 			予備設定へ直接回す (形式の指定によらない)。直接回した予備設定が失敗したら、その動画を忘れて失敗を返す
-			(動画の状態が変わった可能性があるため、次の要求は主経路から試す)
+			(動画の状態が変わった可能性があるため、次の要求は主経路から試す)。
+			覚えてから fallback.FALLBACK_MEMORY_TTL_SECONDS 秒たった動画も忘れ、主経路から試し直す
 		- Cookie を使っていて、主経路の失敗が Cookie 関連 (protocol.cookie_failure、または Cookie の読み込みの失敗) なら、
 			上の予備設定の代わりに、予備設定から Cookie を外した設定で 1 回だけ取り直す。判定には主経路の取得の間に
 			yt-dlp が出した警告を使う。Cookie なしで解決できても覚えない (次の要求も Cookie ありから試す)
@@ -852,7 +894,10 @@ class Worker:
 		try:
 			info = self._run_fallback(base, url, format_id, limit)
 		except Exception as fallback_error:
-			raise FallbackFailedError(first_error, fallback_error) from fallback_error
+			# Cookie ありの not_found は当てにならない (取り直す理由そのもの)。分類で予備設定の理由を優先させる
+			raise FallbackFailedError(
+				first_error, fallback_error, first_unreliable=not_found_with_cookies,
+			) from fallback_error
 		speedups.log(f"fallback succeeded: {url}")
 		# ボット判定や internal は一時的なことが多いため覚えない (覚えると速い主経路を使わなくなる)
 		if not_found_with_cookies:
@@ -1171,6 +1216,8 @@ def error_response(request_id: Any, error: Exception) -> dict[str, Any]:
 	例外をプロトコルの失敗応答へ変換する。
 	- 予備設定でも失敗した場合は通常の設定の理由で分類し、分類できなければ予備設定の理由で分類する
 		(連結した文言のままだと、予備設定の理由が通常の設定の理由より先に一致することがあるため)
+	- ただし通常の設定の理由が当てにならない (Cookie ありの not_found) ときは、予備設定の理由が
+		SPECIFIC_FALLBACK_CODES のいずれかなら、そちらを使う
 
 	Args:
 		request_id: 要求の id。読み取れなかった場合は None
@@ -1187,6 +1234,10 @@ def error_response(request_id: Any, error: Exception) -> dict[str, Any]:
 		code = classify_error(str(error.first))
 		if code == "internal":
 			code = classify_error(str(error.fallback))
+		elif code == "not_found" and error.first_unreliable:
+			fallback_code = classify_error(str(error.fallback))
+			if fallback_code in SPECIFIC_FALLBACK_CODES:
+				code = fallback_code
 	else:
 		code = classify_error(message)
 	return {

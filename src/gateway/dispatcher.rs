@@ -29,7 +29,7 @@ use super::cache_view::{
 	guild_permission_data, listeners_in_channel, restore_listeners, voice_channel_of,
 	GuildPermissionData,
 };
-use super::notifier::DiscordNotifier;
+use super::notifier::{within_send_timeout, DiscordNotifier};
 use super::page_timers::{Due, PageTimers, Settled};
 use super::permissions::is_server_admin;
 use super::ready::ReadyGate;
@@ -883,11 +883,13 @@ impl Dispatcher {
 				}
 			}
 		};
-		let result = self
-			.http
-			.interaction(interaction.application_id)
-			.create_response(interaction.id, &interaction.token, &response)
-			.await;
+		let interaction_client = self.http.interaction(interaction.application_id);
+		let request =
+			interaction_client.create_response(interaction.id, &interaction.token, &response);
+		let Some(result) = within_send_timeout(request).await else {
+			tracing::warn!("ボタンへの応答が上限時間を過ぎました");
+			return;
+		};
 		if let Err(error) = result {
 			// 先に延ばした期限はそのまま残す (期限には、届かなかったページのボタンを灰色にして送るだけのため)
 			tracing::warn!(%error, "ボタンに応答できませんでした");

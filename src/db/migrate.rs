@@ -13,6 +13,7 @@ const MIGRATIONS: &[&str] = &[
 	include_str!("../../migrations/0003_available_at.sql"),
 	include_str!("../../migrations/0004_history_index.sql"),
 	include_str!("../../migrations/0005_lang.sql"),
+	include_str!("../../migrations/0006_search_cache_video_index.sql"),
 ];
 
 /// 未適用の移行をすべて適用する。

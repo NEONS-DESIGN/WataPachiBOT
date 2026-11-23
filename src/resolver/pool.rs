@@ -346,10 +346,7 @@ impl Manager {
 			let _ = task.reply.send(Err(ResolveError::Unavailable));
 			return;
 		}
-		let queue = match task.priority {
-			Priority::Interactive => &mut self.interactive,
-			Priority::Prefetch => &mut self.prefetch,
-		};
+		let queue = self.queue_mut(task.priority);
 		if front {
 			queue.push_front(task);
 		} else {
@@ -452,6 +449,40 @@ impl Manager {
 		self.dispatch(Priority::Prefetch);
 	}
 
+	/// 優先度に対応する待ち行列 (読み取り用)。
+	///
+	/// # 引数
+	/// - `priority`: 優先度
+	///
+	/// # 戻り値
+	/// その優先度の待ち行列
+	///
+	/// # 例
+	/// `let next = self.queue(Priority::Interactive).front();`
+	fn queue(&self, priority: Priority) -> &VecDeque<Task> {
+		match priority {
+			Priority::Interactive => &self.interactive,
+			Priority::Prefetch => &self.prefetch,
+		}
+	}
+
+	/// 優先度に対応する待ち行列 (書き換え用)。
+	///
+	/// # 引数
+	/// - `priority`: 優先度
+	///
+	/// # 戻り値
+	/// その優先度の待ち行列
+	///
+	/// # 例
+	/// `self.queue_mut(task.priority).push_back(task);`
+	fn queue_mut(&mut self, priority: Priority) -> &mut VecDeque<Task> {
+		match priority {
+			Priority::Interactive => &mut self.interactive,
+			Priority::Prefetch => &mut self.prefetch,
+		}
+	}
+
 	/// 片方の待ち行列から、前の要求から順に割り当てる。
 	///
 	/// - Prefetch は割り当て前の空きが予約数を超えるときだけ実行する
@@ -469,22 +500,14 @@ impl Manager {
 			Priority::Prefetch => self.reserved,
 		};
 		while self.idle_count() > keep_free {
-			let queue = match priority {
-				Priority::Interactive => &self.interactive,
-				Priority::Prefetch => &self.prefetch,
-			};
-			let Some(task) = queue.front() else {
+			let Some(task) = self.queue(priority).front() else {
 				break;
 			};
 			let Some(slot) = self.pick_slot(task) else {
 				// 空いている台が無い。ループの条件で起こらないが、念のため止める
 				break;
 			};
-			let queue = match priority {
-				Priority::Interactive => &mut self.interactive,
-				Priority::Prefetch => &mut self.prefetch,
-			};
-			if let Some(task) = queue.pop_front() {
+			if let Some(task) = self.queue_mut(priority).pop_front() {
 				if let Some(retry_at) = paused_for(&self.pause, &task.request) {
 					let _ = task.reply.send(Err(ResolveError::Paused { retry_at }));
 					continue;

@@ -20,6 +20,7 @@ use fake_audio::{AudioCall, AudioOp, FakeAudio};
 use watapachi_bot::audio::backend::{
 	AudioError, AudioEvent, DisconnectKind, PlayRequest, VoiceHealth,
 };
+use watapachi_bot::db::settings;
 use watapachi_bot::domain::{ChannelId, Priority, ResolveError, ResolveErrorCode, VideoId};
 use watapachi_bot::guild::message::GuildCommand;
 
@@ -442,6 +443,58 @@ async fn third_failure_skips() {
 	);
 }
 
+/// ループ中に、曲に固有でない理由 (3 回目の再生の失敗) で飛ばした曲は、キューの末尾へ戻し、履歴にも残すこと。
+#[tokio::test]
+async fn loop_keeps_track_skipped_after_third_failure() {
+	let env = Env::new();
+	env.write(|c| settings::set_loop(c, guild(), true)).await;
+	let (a, b) = (vid('a'), vid('b'));
+	env.set_playlist(&[&a, &b]);
+	env.play(PLAYLIST_URL);
+	wait_until("1 曲目の再生", || started(&env.audio, &a)).await;
+	env.barrier().await;
+
+	for attempt in 1..=2 {
+		fail_track(&env, &a).await;
+		wait_until("再開", || {
+			plays(&env.audio).iter().filter(|r| r.video_id == a).count() == 1 + attempt
+		})
+		.await;
+		env.barrier().await;
+	}
+	fail_track(&env, &a).await;
+	wait_until("2 曲目の再生", || started(&env.audio, &b)).await;
+	env.barrier().await;
+
+	assert_eq!(titles_of(&env, "error.track_skipped"), vec![title(&a)]);
+	assert_eq!(env.queue_ids(), vec![a.clone()]);
+	assert_eq!(
+		env.history()
+			.iter()
+			.map(|entry| entry.item.video_id.clone())
+			.collect::<Vec<_>>(),
+		vec![a.clone()]
+	);
+}
+
+/// ループ中でも、曲に固有の理由 (動画が無い) で飛ばした曲はキューへ戻さないこと。
+#[tokio::test]
+async fn loop_drops_track_skipped_for_track_specific_reason() {
+	let env = Env::new();
+	env.write(|c| settings::set_loop(c, guild(), true)).await;
+	let (a, b) = (vid('a'), vid('b'));
+	env.set_playlist(&[&a, &b]);
+	env.resolver
+		.set_result(&a, Err(worker_error(ResolveErrorCode::NotFound)));
+	env.play(PLAYLIST_URL);
+	wait_until("2 曲目の再生", || started(&env.audio, &b)).await;
+	env.barrier().await;
+
+	assert_eq!(titles_of(&env, "error.video_not_found"), vec![title(&a)]);
+	assert!(env.queue_ids().is_empty());
+	assert!(env.history().is_empty());
+}
+
 #[tokio::test]
 async fn disconnect_rejoins_and_resumes_position() {
 	let env = Env::new();
@@ -741,6 +794,32 @@ async fn leave_during_recovering_cancels_rejoin() {
 	// 退出で再接続の処理を止めるので、保留を解いても再生しない
 	assert_eq!(plays(&env.audio).len(), 1);
 	assert!(env.playback().is_empty());
+	assert!(!env.has_notice("control.rejoined"));
+}
+
+/// 回復で前のセッションを切断している間に退出したら、切断の後に入り直さないこと。
+#[tokio::test]
+async fn leave_while_recovery_disconnects_does_not_rejoin() {
+	let env = Env::new();
+	let a = vid('a');
+	play_one(&env, &a).await;
+	env.audio.hold_disconnect();
+	env.send(GuildCommand::Rejoin);
+	env.barrier().await;
+	settle().await;
+	env.barrier().await;
+	// 前のセッションの切断を保留しているため、まだ接続し直していない
+	assert_eq!(connects(&env.audio), 1);
+
+	env.send(GuildCommand::Leave);
+	wait_until("退出の通知", || env.has_notice("control.left")).await;
+	env.audio.release_disconnect();
+	env.barrier().await;
+	settle().await;
+	env.barrier().await;
+
+	assert_eq!(connects(&env.audio), 1, "退出の後に入り直した");
+	assert_eq!(plays(&env.audio).len(), 1);
 	assert!(!env.has_notice("control.rejoined"));
 }
 

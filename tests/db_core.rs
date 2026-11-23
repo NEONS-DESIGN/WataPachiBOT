@@ -37,7 +37,7 @@ async fn migration_sets_user_version_and_is_idempotent() {
 	let path = dir.path().join("test.db");
 	let db = Database::open(&path, &config()).unwrap();
 	db.close().await.unwrap();
-	assert_eq!(user_version(&path), 5);
+	assert_eq!(user_version(&path), 6);
 
 	// 2 回目の open でも版とデータは変わらない
 	let db = Database::open(&path, &config()).unwrap();
@@ -55,7 +55,7 @@ async fn migration_sets_user_version_and_is_idempotent() {
 		.unwrap();
 	assert_eq!(tables, 1);
 	db.close().await.unwrap();
-	assert_eq!(user_version(&path), 5);
+	assert_eq!(user_version(&path), 6);
 }
 
 #[tokio::test]

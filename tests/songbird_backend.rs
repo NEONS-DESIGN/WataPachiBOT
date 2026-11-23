@@ -27,7 +27,9 @@ use songbird::Call;
 use tokio::sync::{mpsc, Mutex};
 use twilight_model::id::Id;
 use watapachi_bot::audio::backend::{AudioError, AudioEvent, DisconnectKind, PlayRequest, TrackId};
-use watapachi_bot::audio::chunked::{ChunkConfig, ChunkError, ChunkFailure, UrlRefresher};
+use watapachi_bot::audio::chunked::{
+	ChunkConfig, ChunkError, ChunkFailure, UrlRefresher, EXPIRY_RECHECK_INTERVAL,
+};
 use watapachi_bot::audio::limits::{VoiceLimits, OUTER_MARGIN};
 use watapachi_bot::audio::pipe::PipeSpec;
 use watapachi_bot::audio::songbird_backend::{
@@ -76,6 +78,7 @@ fn chunk_config() -> ChunkConfig {
 		attempts: 2,
 		refresh_margin: Duration::ZERO,
 		available_wait_max: Duration::ZERO,
+		expiry_recheck_interval: EXPIRY_RECHECK_INTERVAL,
 	}
 }
 

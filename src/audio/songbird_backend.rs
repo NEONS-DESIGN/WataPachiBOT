@@ -785,6 +785,24 @@ impl Slot {
 		self.gate.silence();
 		self.stop();
 	}
+
+	/// 曲への指示を頼めなかったとき、イベントを送らずに曲を捨て、呼び出し元へ返す失敗を作る。
+	///
+	/// # 引数
+	/// - `what`: 頼めなかった指示の説明 (例: "シークを頼めません")
+	///
+	/// # 戻り値
+	/// 曲の番号を添えた `AudioError::Failed`
+	///
+	/// # 呼び出し例
+	/// ```ignore
+	/// return Err(slot.discard_failed("シークを頼めません"));
+	/// ```
+	fn discard_failed(self, what: &str) -> AudioError {
+		let track = self.track;
+		self.discard();
+		AudioError::Failed(format!("{what} (曲 {})", track.0))
+	}
 }
 
 /// Songbird の 1 つの接続のセッション。
@@ -1025,23 +1043,13 @@ impl VoiceSession for SongbirdSession {
 		let slot = self.load(&request, request.paused).await?;
 		let seeking = !request.start_at.is_zero() && slot.seekable;
 		if request.paused && !seeking && slot.handle.make_playable().is_hung_up() {
-			let track = slot.track;
-			slot.discard();
-			return Err(AudioError::Failed(format!(
-				"曲の準備を頼めません (曲 {})",
-				track.0
-			)));
+			return Err(slot.discard_failed("曲の準備を頼めません"));
 		}
 		if !request.start_at.is_zero() {
 			if slot.seekable {
 				slot.gate.set_pending_start(request.start_at);
 				if slot.handle.seek(request.start_at).is_hung_up() {
-					let track = slot.track;
-					slot.discard();
-					return Err(AudioError::Failed(format!(
-						"シークを頼めません (曲 {})",
-						track.0
-					)));
+					return Err(slot.discard_failed("シークを頼めません"));
 				}
 			} else {
 				tracing::info!(
@@ -1068,12 +1076,7 @@ impl VoiceSession for SongbirdSession {
 		}
 		let slot = self.load(&request, true).await?;
 		if slot.handle.make_playable().is_hung_up() {
-			let track = slot.track;
-			slot.discard();
-			return Err(AudioError::Failed(format!(
-				"曲の準備を頼めません (曲 {})",
-				track.0
-			)));
+			return Err(slot.discard_failed("曲の準備を頼めません"));
 		}
 		let track = slot.track;
 		self.preloaded = Some(slot);

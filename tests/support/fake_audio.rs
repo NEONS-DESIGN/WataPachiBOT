@@ -58,6 +58,8 @@ struct State {
 	position: Duration,
 	/// `connect` の保留。値が true になったら解放済み。
 	connect_hold: Option<watch::Sender<bool>>,
+	/// `disconnect` の保留。値が true になったら解放済み。
+	disconnect_hold: Option<watch::Sender<bool>>,
 	/// `health` が 1 回ごとに足す量。None なら暗号化のフレームだけが増える健全な既定の動き。
 	health_step: Option<VoiceHealth>,
 	/// `health` が最後に返した値 (累計)。
@@ -166,6 +168,23 @@ impl FakeAudio {
 	pub fn release_connect(&self) {
 		if let Ok(mut s) = self.state.lock() {
 			if let Some(tx) = s.connect_hold.take() {
+				tx.send_replace(true);
+			}
+		}
+	}
+
+	/// 以後の `disconnect` を保留する。`release_disconnect` まで完了しない (呼び出しは記録する)。
+	pub fn hold_disconnect(&self) {
+		if let Ok(mut s) = self.state.lock() {
+			let (tx, _rx) = watch::channel(false);
+			s.disconnect_hold = Some(tx);
+		}
+	}
+
+	/// `disconnect` の保留を解く。
+	pub fn release_disconnect(&self) {
+		if let Ok(mut s) = self.state.lock() {
+			if let Some(tx) = s.disconnect_hold.take() {
 				tx.send_replace(true);
 			}
 		}
@@ -299,6 +318,15 @@ impl VoiceSession for FakeSession {
 	}
 
 	async fn disconnect(self: Box<Self>) -> Result<(), AudioError> {
+		let mut hold = self
+			.state
+			.lock()
+			.ok()
+			.and_then(|s| s.disconnect_hold.as_ref().map(|tx| tx.subscribe()));
+		if let Some(rx) = hold.as_mut() {
+			// 送信側が先に消えても (解放済み)、値は残るので待ちは解ける
+			let _ = rx.wait_for(|released| *released).await;
+		}
 		self.with(|s| s.record(AudioCall::Disconnect, AudioOp::Disconnect))
 	}
 
