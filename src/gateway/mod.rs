@@ -7,6 +7,7 @@
 //! - `cache_view`: キャッシュからの取り出し (ギルド全体の権限の計算の入力、聴者の数)
 //! - `page_timers`: ページ送りのボタンを灰色にする期限の記録
 //! - `permissions`: 権限の計算 (キャッシュからの取り出しは呼び出し側が行う)
+//! - `voice_access`: 参加の前のボイスチャンネルの確認 (権限と満員)
 
 pub mod cache_view;
 pub mod dispatcher;
@@ -17,3 +18,4 @@ pub mod ready;
 pub mod requester;
 pub mod route;
 pub mod shard;
+pub mod voice_access;

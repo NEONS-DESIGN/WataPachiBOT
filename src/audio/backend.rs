@@ -8,6 +8,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use tokio::sync::mpsc;
 
+use super::access::Denial;
 use crate::domain::{ChannelId, GuildId, ResolvedStream, VideoId};
 use crate::guild::message::GuildMessage;
 
@@ -32,6 +33,9 @@ pub enum AudioError {
 	/// 再生などの操作に失敗した。
 	#[error("音声処理に失敗しました: {0}")]
 	Failed(String),
+	/// 参加の前の確認で、権限の不足か満員のため参加しなかった。
+	#[error("ボイスチャンネルに入れません: {0}")]
+	Denied(Denial),
 }
 
 /// 切断の種類。
