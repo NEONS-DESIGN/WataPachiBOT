@@ -80,6 +80,9 @@ fn occupants_exclude_the_bot_itself() {
 #[test]
 fn denial_display_names_the_missing_permissions() {
 	let denial = Denial::Missing(vec![VoicePermission::ViewChannel, VoicePermission::Connect]);
-	assert_eq!(denial.to_string(), "権限がありません: VIEW_CHANNEL, CONNECT");
+	assert_eq!(
+		denial.to_string(),
+		"権限がありません: VIEW_CHANNEL, CONNECT"
+	);
 	assert_eq!(Denial::Full.to_string(), "チャンネルが満員です");
 }
