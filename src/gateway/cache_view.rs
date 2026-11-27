@@ -21,6 +21,18 @@ pub struct GuildPermissionData {
 }
 
 impl GuildPermissionData {
+	/// キャッシュで見つかった、メンバーの役職の数 (`@everyone` を含まない)。
+	///
+	/// - 渡した役職の数より少なければ、キャッシュに無い役職がある (その役職の権限と上書きは計算に入らない)
+	///
+	/// # 呼び出し例
+	/// ```ignore
+	/// let complete = data.known_roles() == role_ids.len();
+	/// ```
+	pub fn known_roles(&self) -> usize {
+		self.member_roles.len()
+	}
+
 	/// 権限の計算の入力を作る。
 	///
 	/// # 引数

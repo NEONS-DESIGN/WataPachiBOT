@@ -178,7 +178,8 @@ impl DiscordVoiceAccess {
 impl VoiceAccess for DiscordVoiceAccess {
 	/// チャンネルでの Bot の権限と人数から、参加してよいかを確かめる。
 	///
-	/// - チャンネル・ギルド・Bot の役職のどれかが分からなければ `Unknown` (debug に残す)
+	/// - チャンネル・ギルド・Bot の役職のどれかが分からなければ `Unknown` (debug に残す)。
+	///   Bot の役職の一部がキャッシュに無いときも `Unknown`
 	/// - 判定は `judge`。人数は Bot 自身を除いて数える
 	async fn check(&self, guild: GuildId, channel: ChannelId) -> AccessVerdict {
 		let Some(info) = self.voice_channel(guild, channel) else {
@@ -203,6 +204,16 @@ impl VoiceAccess for DiscordVoiceAccess {
 			);
 			return AccessVerdict::Unknown;
 		};
+		// キャッシュに無い役職は権限も上書きも計算に入らず、入れるのに断ることがあるため、確かめない
+		if data.known_roles() != roles.len() {
+			tracing::debug!(
+				guild = guild.get(),
+				roles = roles.len(),
+				known = data.known_roles(),
+				"Bot の役職の一部がキャッシュに無いため、権限を確かめずに参加します"
+			);
+			return AccessVerdict::Unknown;
+		}
 		let perms =
 			channel_permissions(&data.input(guild, self.bot_id), info.kind, &info.overwrites);
 		// 声の状態のロックは集めた後に手放す
