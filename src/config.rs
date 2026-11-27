@@ -34,6 +34,14 @@ fn default_initial_chunk_size() -> u64 {
 	DEFAULT_INITIAL_CHUNK_SIZE_BYTES
 }
 
+/// `voice.access_check_timeout_secs` の省略時の値 (秒)。
+pub const DEFAULT_ACCESS_CHECK_TIMEOUT_SECS: u64 = 3;
+
+/// `voice.access_check_timeout_secs` の省略時の値を返す (serde の既定値)。
+fn default_access_check_timeout() -> u64 {
+	DEFAULT_ACCESS_CHECK_TIMEOUT_SECS
+}
+
 /// `ui.user_avatar_url` の既定値 (Discord の CDN)。
 pub const DEFAULT_USER_AVATAR_URL: &str = "https://cdn.discordapp.com/avatars/{user}/{hash}.png";
 /// `ui.member_avatar_url` の既定値 (Discord の CDN)。
@@ -228,6 +236,10 @@ pub struct HealthConfig {
 pub struct VoiceConfig {
 	pub call_timeout_secs: u64,
 	pub join_timeout_secs: u64,
+	/// 参加の前の権限の確認で、Bot の役職を REST で取り直す上限 (秒)。
+	/// 省略時は `DEFAULT_ACCESS_CHECK_TIMEOUT_SECS` (この項目より前に作った `config.toml` を読めるようにする)
+	#[serde(default = "default_access_check_timeout")]
+	pub access_check_timeout_secs: u64,
 }
 
 /// `[cache]` キャッシュの保持期間。
@@ -516,14 +528,20 @@ impl Config {
 		let v = &self.voice;
 		check_secs(v.call_timeout_secs, 1, "voice.call_timeout_secs")?;
 		check_secs(v.join_timeout_secs, 1, "voice.join_timeout_secs")?;
+		check_secs(
+			v.access_check_timeout_secs,
+			1,
+			"voice.access_check_timeout_secs",
+		)?;
 		// アクターは待機の時間を過ぎると、起動中の処理 (接続を含む) を捨てて終わる。
-		// 接続を待つ上限より短いと、`?stop` の後などに残った接続の処理が後始末の途中で止まる
-		let connect = VoiceLimits::new(v).connect();
+		// 接続のタスク (参加の前の確認と接続) の上限より短いと、`?stop` の後などに残った接続の処理が後始末の途中で止まる
+		let limits = VoiceLimits::new(v);
+		let connect = limits.access() + limits.connect();
 		check(
 			Duration::from_secs(l.actor_idle_timeout_secs) > connect,
 			"limits.actor_idle_timeout_secs",
 			&format!(
-				"音声の接続を待つ上限 ({} 秒 = voice.join_timeout_secs + voice.call_timeout_secs × 2 + {} 秒) より長い値",
+				"音声の接続を待つ上限 ({} 秒 = voice.access_check_timeout_secs + voice.join_timeout_secs + voice.call_timeout_secs × 2 + {} 秒 × 2) より長い値",
 				connect.as_secs(),
 				OUTER_MARGIN.as_secs()
 			),

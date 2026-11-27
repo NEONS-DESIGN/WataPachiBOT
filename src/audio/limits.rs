@@ -1,4 +1,5 @@
-//! 音声の呼び出しの上限時間。`voice.call_timeout_secs` と `voice.join_timeout_secs` から導く。
+//! 音声の呼び出しの上限時間。`voice.call_timeout_secs`、`voice.join_timeout_secs`、
+//! `voice.access_check_timeout_secs` から導く。
 //! - 内側 (`SongbirdBackend`) は Songbird の 1 回の呼び出しを `call`、参加を `join` で打ち切り、
 //!   失敗や時間切れのときは後始末 (Call の削除) まで行ってから戻る
 //! - 外側 (アクター) の上限は、内側の時間切れと後始末の合計に `OUTER_MARGIN` を足した値にする。
@@ -23,6 +24,7 @@ pub const OUTER_MARGIN: Duration = Duration::from_secs(2);
 pub struct VoiceLimits {
 	call: Duration,
 	join: Duration,
+	access: Duration,
 }
 
 impl VoiceLimits {
@@ -42,7 +44,20 @@ impl VoiceLimits {
 		Self {
 			call: Duration::from_secs(voice.call_timeout_secs),
 			join: Duration::from_secs(voice.join_timeout_secs),
+			access: Duration::from_secs(voice.access_check_timeout_secs),
 		}
+	}
+
+	/// アクターが参加の前の確認 (`VoiceAccess::check`) を待つ上限。
+	///
+	/// - 内側の最長: Bot の役職の取り直し (`voice.access_check_timeout_secs`)。その後のキャッシュでの判定は待たない
+	/// - 過ぎたら確かめられなかったものとして参加を試す
+	/// - `connect` には含めない。接続のタスクの全体は `access + connect` になる
+	///
+	/// # 呼び出し例
+	/// `timeout(limits.access(), access.check(guild, channel)).await`
+	pub fn access(&self) -> Duration {
+		self.access + OUTER_MARGIN
 	}
 
 	/// Songbird の 1 回の呼び出しの上限 (`voice.call_timeout_secs`)。アクターの通常の呼び出しにも使う。

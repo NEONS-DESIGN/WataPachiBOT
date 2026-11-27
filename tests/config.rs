@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 
 use watapachi_bot::audio::limits::VoiceLimits;
 use watapachi_bot::config::{
-	Config, ConfigError, MAX_DURATION_SECS, MAX_RESTORE_STAGGER_MS, MAX_SHUTDOWN_TIMEOUT_SECS,
-	MAX_WORKER_COUNT,
+	Config, ConfigError, DEFAULT_ACCESS_CHECK_TIMEOUT_SECS, MAX_DURATION_SECS,
+	MAX_RESTORE_STAGGER_MS, MAX_SHUTDOWN_TIMEOUT_SECS, MAX_WORKER_COUNT,
 };
 use watapachi_bot::lang::Lang;
 use watapachi_bot::messages::{Messages, NoticeColor, NOTICE_KEYS};
@@ -439,6 +439,10 @@ fn durations_are_bounded() {
 		("auto_rejoin_window_secs", "health.auto_rejoin_window_secs"),
 		("call_timeout_secs", "voice.call_timeout_secs"),
 		("join_timeout_secs", "voice.join_timeout_secs"),
+		(
+			"access_check_timeout_secs",
+			"voice.access_check_timeout_secs",
+		),
 		("resolve_timeout_secs", "worker.resolve_timeout_secs"),
 		(
 			"rate_limit_backoff_max_secs",
@@ -466,10 +470,12 @@ fn durations_are_bounded() {
 
 #[test]
 fn actor_idle_timeout_must_exceed_voice_connect_limit() {
-	// 例の設定の接続の上限は join 15 + call 10 × 2 + 2 = 37 秒
+	// 例の設定の接続のタスクの上限は (access 3 + 2) + (join 15 + call 10 × 2 + 2) = 42 秒
 	let config = Config::load(&root("config.example.toml")).unwrap();
-	let connect = VoiceLimits::new(&config.voice).connect().as_secs();
-	assert_eq!(connect, 37);
+	let limits = VoiceLimits::new(&config.voice);
+	assert_eq!(limits.connect().as_secs(), 37);
+	let connect = (limits.access() + limits.connect()).as_secs();
+	assert_eq!(connect, 42);
 	assert_eq!(
 		invalid_key(&replace_line("actor_idle_timeout_secs", connect)).as_deref(),
 		Some("limits.actor_idle_timeout_secs")
@@ -483,6 +489,32 @@ fn actor_idle_timeout_must_exceed_voice_connect_limit() {
 	assert_eq!(
 		invalid_key(&text).as_deref(),
 		Some("limits.actor_idle_timeout_secs")
+	);
+}
+
+#[test]
+fn access_check_timeout_is_checked_and_defaults_when_omitted() {
+	let config = Config::load(&root("config.example.toml")).unwrap();
+	assert_eq!(config.voice.access_check_timeout_secs, 3);
+	// アクターの待ちは REST の上限に余裕 (2 秒) を足したもの
+	assert_eq!(
+		VoiceLimits::new(&config.voice).access(),
+		std::time::Duration::from_secs(5)
+	);
+	assert_eq!(
+		invalid_key(&replace_line("access_check_timeout_secs", 0)).as_deref(),
+		Some("voice.access_check_timeout_secs")
+	);
+	// この項目より前に作った config.toml も読める
+	let omitted: String = example_text()
+		.lines()
+		.filter(|line| !line.starts_with("access_check_timeout_secs = "))
+		.map(|line| format!("{line}\n"))
+		.collect();
+	let config = load_text(&omitted).unwrap();
+	assert_eq!(
+		config.voice.access_check_timeout_secs,
+		DEFAULT_ACCESS_CHECK_TIMEOUT_SECS
 	);
 }
 

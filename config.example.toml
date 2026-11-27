@@ -77,6 +77,7 @@ auto_rejoin_window_secs = 600
 [voice]
 call_timeout_secs = 10
 join_timeout_secs = 15
+access_check_timeout_secs = 3  # 参加の前の権限の確認で、Bot の役職を REST で取り直す上限。過ぎたらキャッシュの役職で確かめる
 
 [cache]
 playlist_ttl_secs = 14400
