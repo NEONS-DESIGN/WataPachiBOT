@@ -4,7 +4,8 @@
 
 use super::message::LookupKind;
 use super::notifier::{Card, Notice, PlaylistCard};
-use crate::domain::{ResolveError, ResolveErrorCode};
+use crate::audio::access::{Denial, VoicePermission};
+use crate::domain::{ChannelId, ResolveError, ResolveErrorCode};
 use crate::ui::embed::{code_span_text, escape_markdown};
 
 /// 通知のキーと差し込みの名前。
@@ -29,6 +30,11 @@ pub(super) mod keys {
 	pub const PLAYLIST_EMPTY: &str = "error.playlist_empty";
 	pub const TRACK_SKIPPED: &str = "error.track_skipped";
 	pub const CONNECT_FAILED: &str = "error.connect_failed";
+	pub const VOICE_NO_PERMISSION: &str = "error.voice_no_permission";
+	pub const VOICE_FULL: &str = "error.voice_full";
+	pub const PERM_VIEW_CHANNEL: &str = "ui.perm_view_channel";
+	pub const PERM_CONNECT: &str = "ui.perm_connect";
+	pub const PERM_SPEAK: &str = "ui.perm_speak";
 	pub const PAUSED: &str = "control.paused";
 	pub const RESUMED: &str = "control.resumed";
 	pub const SKIPPED: &str = "control.skipped";
@@ -82,6 +88,7 @@ pub(super) mod keys {
 	pub const ARG_PREFIX: &str = "prefix";
 	pub const ARG_LIMIT: &str = "limit";
 	pub const ARG_CHANNEL: &str = "channel";
+	pub const ARG_PERMISSIONS: &str = "permissions";
 }
 
 /// キー 1 つだけの通知を作る。
@@ -115,9 +122,8 @@ pub(super) fn plain(key: &'static str) -> Notice {
 /// ```
 pub(super) fn titled(key: &'static str, title: &str) -> Notice {
 	Notice {
-		key,
 		args: vec![(keys::ARG_TITLE, title.to_owned())],
-		card: None,
+		..Notice::text(key, Vec::new())
 	}
 }
 
@@ -176,10 +182,45 @@ pub(super) fn with_args<const N: usize>(
 	key: &'static str,
 	args: [(&'static str, String); N],
 ) -> Notice {
-	Notice {
-		key,
-		args: args.into(),
-		card: None,
+	Notice::text(key, args.into())
+}
+
+/// 参加の前の確認で断った理由を伝える通知を作る。
+///
+/// - 権限の不足は `error.voice_no_permission`。足りない権限の名前を、通知の言語で並べて差し込む
+/// - 満員は `error.voice_full`
+///
+/// # 引数
+/// - `denial`: 断った理由
+/// - `channel`: 入ろうとしたボイスチャンネル (`<#id>` で差し込む)
+///
+/// # 戻り値
+/// 理由の通知
+///
+/// # 呼び出し例
+/// ```ignore
+/// self.notify(channels.text, denial_notice(&denial, channels.voice));
+/// ```
+pub(super) fn denial_notice(denial: &Denial, channel: ChannelId) -> Notice {
+	let args = vec![(keys::ARG_CHANNEL, format!("<#{}>", channel.get()))];
+	match denial {
+		Denial::Missing(missing) => Notice {
+			lists: vec![(
+				keys::ARG_PERMISSIONS,
+				missing.iter().map(|p| permission_key(*p)).collect(),
+			)],
+			..Notice::text(keys::VOICE_NO_PERMISSION, args)
+		},
+		Denial::Full => Notice::text(keys::VOICE_FULL, args),
+	}
+}
+
+/// 権限の名前の部品の文字列のキー。
+fn permission_key(permission: VoicePermission) -> &'static str {
+	match permission {
+		VoicePermission::ViewChannel => keys::PERM_VIEW_CHANNEL,
+		VoicePermission::Connect => keys::PERM_CONNECT,
+		VoicePermission::Speak => keys::PERM_SPEAK,
 	}
 }
 
@@ -245,12 +286,12 @@ pub(super) fn counted(card: PlaylistCard) -> Notice {
 	} else {
 		keys::PLAYLIST_QUEUED
 	};
+	let args = vec![
+		(keys::ARG_ADDED, card.added.to_string()),
+		(keys::ARG_REJECTED, card.rejected.to_string()),
+	];
 	Notice {
-		key,
-		args: vec![
-			(keys::ARG_ADDED, card.added.to_string()),
-			(keys::ARG_REJECTED, card.rejected.to_string()),
-		],
 		card: Some(Card::Playlist(card)),
+		..Notice::text(key, args)
 	}
 }

@@ -173,11 +173,13 @@ async fn fake_notifier_records_notices_in_order() {
 		key: "a",
 		args: vec![("x", "1".to_string())],
 		card: None,
+		lists: vec![],
 	};
 	let second = Notice {
 		key: "b",
 		args: vec![],
 		card: None,
+		lists: vec![],
 	};
 	notifier.send(channel, first.clone()).await;
 	notifier.send(channel, second.clone()).await;

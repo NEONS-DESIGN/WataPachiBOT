@@ -39,6 +39,8 @@ video_geo_blocked = { title = "⚠️ Skipped", text = "Failed to load `{title}`
 video_age_restricted = { title = "⚠️ Skipped", text = "Failed to load `{title}`, so it was skipped.\nThis video is age-restricted and cannot be played.", color = "yellow" }
 live_skipped = { title = "⚠️ Skipped", text = "Failed to load `{title}`, so it was skipped.\nLive streams are not supported.", color = "yellow" }
 connect_failed = { title = "❌ Connection Error", text = "Could not connect to the voice channel.", color = "red" }
+voice_no_permission = { title = "❌ Connection Error", text = "The Bot does not have permission to join {channel}.\nMissing permissions: **{permissions}**\nAsk a server admin to update the Bot's roles or the channel permissions.", color = "red" }
+voice_full = { title = "❌ Connection Error", text = "The Bot cannot join {channel} because it has reached its user limit.", color = "red" }
 nothing_playing = { title = "🎵 Nothing is playing right now.", color = "red" }
 already_paused = { title = "⚠️ Notice", text = "Playback is already paused.", color = "yellow" }
 not_paused = { title = "⚠️ Notice", text = "Already playing.", color = "yellow" }
@@ -110,6 +112,10 @@ footer_requester = "Requested by: {name}"
 card_failed = "{title}\n(Failed to show the details)"
 unknown_title = "Unknown Title"
 admin_field = "🔧 For Administrators"
+list_separator = ", "
+perm_view_channel = "View Channel"
+perm_connect = "Connect"
+perm_speak = "Speak"
 queue_title = "📝 Queue (page {page}/{total})"
 history_title = "🕘 Playback History (page {page}/{total})"
 

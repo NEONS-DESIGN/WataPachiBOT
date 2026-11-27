@@ -43,7 +43,43 @@ fn notice(key: &'static str) -> Notice {
 		key,
 		args: Vec::new(),
 		card: None,
+		lists: Vec::new(),
 	}
+}
+
+/// 参加の権限の不足の通知 (見る・接続が足りない)。
+fn denied_notice() -> Notice {
+	Notice {
+		key: "error.voice_no_permission",
+		args: vec![("channel", "<#42>".to_string())],
+		card: None,
+		lists: vec![(
+			"permissions",
+			vec!["ui.perm_view_channel", "ui.perm_connect"],
+		)],
+	}
+}
+
+#[test]
+fn listed_parts_are_rendered_in_the_notice_language() {
+	let ja = notice_embed(&messages(), &ui(), "?", &denied_notice(), None);
+	let text = ja.description.unwrap();
+	assert!(text.contains("<#42>"), "{text}");
+	assert!(text.contains("チャンネルを見る、接続"), "{text}");
+	let en_messages = Messages::load(&root("messages/en.toml")).unwrap();
+	let en = notice_embed(&en_messages, &ui(), "?", &denied_notice(), None);
+	let text = en.description.unwrap();
+	assert!(text.contains("View Channel, Connect"), "{text}");
+}
+
+#[test]
+fn full_channel_notice_names_the_channel() {
+	let mut full = notice("error.voice_full");
+	full.args.push(("channel", "<#42>".to_string()));
+	let text = notice_embed(&messages(), &ui(), "?", &full, None)
+		.description
+		.unwrap();
+	assert!(text.contains("<#42>"), "{text}");
 }
 
 /// ボタンの並びから (custom_id, label, style, disabled) を取り出す。

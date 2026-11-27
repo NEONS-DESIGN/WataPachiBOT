@@ -11,6 +11,9 @@ pub struct Notice {
 	pub args: Vec<(&'static str, String)>,
 	/// 曲のカード。`play.now_playing`・`play.queued`・`play.playlist_*` だけが持つ
 	pub card: Option<Card>,
+	/// 通知の言語で描く部品の並びの差し込み。差し込みの名前と、部品の文字列のキー (`TEXT_KEYS`) の並び。
+	/// 描くときに各キーを描画し、`ui.list_separator` でつないで本文へ差し込む (権限の名前など)
+	pub lists: Vec<(&'static str, Vec<&'static str>)>,
 }
 
 impl Notice {
@@ -29,6 +32,7 @@ impl Notice {
 			key,
 			args,
 			card: None,
+			lists: Vec::new(),
 		}
 	}
 }

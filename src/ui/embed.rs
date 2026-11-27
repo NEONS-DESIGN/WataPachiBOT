@@ -45,6 +45,8 @@ pub const TITLE_LIMIT: usize = 256;
 const UNKNOWN_DURATION: &str = "00:00";
 /// 切り詰めた文字列の末尾。
 const ELLIPSIS: &str = "...";
+/// 部品の並び (`Notice::lists`) をつなぐ区切りの部品の文字列のキー。
+const LIST_SEPARATOR_KEY: &str = "ui.list_separator";
 
 /// 一覧の 1 行。`?qlist` と `?history` で共用する。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -253,6 +255,7 @@ pub struct Requester {
 /// 通知 1 件を Embed にする。
 ///
 /// - 題名・本文・色は `notice.key` の通知を `notice.args` と `{prefix}` で描画したもの
+/// - `notice.lists` の部品は通知の言語で描き、`ui.list_separator` でつないで差し込む
 ///   (題名は 256 文字、本文は 4096 文字で切る)
 /// - 管理者向けの文があれば、`ui.admin_field` の項目 (横に並べない) にする
 /// - `card` があれば、`card_embed` でカードにする
@@ -278,9 +281,19 @@ pub fn notice_embed(
 	if let Some(card) = &notice.card {
 		return card_embed(messages, ui, notice.key, card, requester);
 	}
+	let separator = messages.render(LIST_SEPARATOR_KEY, &[]);
+	let lists: Vec<(&str, String)> = notice
+		.lists
+		.iter()
+		.map(|(name, parts)| {
+			let rendered: Vec<String> = parts.iter().map(|key| messages.render(key, &[])).collect();
+			(*name, rendered.join(&separator))
+		})
+		.collect();
 	let mut args: Vec<(&str, &str)> = notice
 		.args
 		.iter()
+		.chain(lists.iter())
 		.map(|(name, value)| (*name, value.as_str()))
 		.collect();
 	if !args.iter().any(|(name, _)| *name == "prefix") {

@@ -43,6 +43,8 @@ video_geo_blocked = { title = "⚠️ スキップ", text = "`{title}` の読み
 video_age_restricted = { title = "⚠️ スキップ", text = "`{title}` の読み込みに失敗したためスキップします。\n年齢制限のある動画のため再生できません。", color = "yellow" }
 live_skipped = { title = "⚠️ スキップ", text = "`{title}` の読み込みに失敗したためスキップします。\nライブ配信には対応していません。", color = "yellow" }
 connect_failed = { title = "❌ 接続エラー", text = "ボイスチャンネルに接続できませんでした。", color = "red" }
+voice_no_permission = { title = "❌ 接続エラー", text = "BOTに {channel} へ入る権限がありません。\n不足している権限: **{permissions}**\nサーバーの管理者に、BOTの役職かチャンネルの権限の設定を依頼してください。", color = "red" }
+voice_full = { title = "❌ 接続エラー", text = "{channel} は人数の上限に達しているため、BOTが入れません。", color = "red" }
 nothing_playing = { title = "🎵 現在、何も再生されていません。", color = "red" }
 already_paused = { title = "⚠️ 通知", text = "既に一時停止中です。", color = "yellow" }
 not_paused = { title = "⚠️ 通知", text = "既に再生中です。", color = "yellow" }
@@ -114,6 +116,10 @@ footer_requester = "Requested by: {name}"
 card_failed = "{title}\n(詳細情報の表示に失敗しました)"
 unknown_title = "Unknown Title"
 admin_field = "🔧 管理者向け"
+list_separator = "、"
+perm_view_channel = "チャンネルを見る"
+perm_connect = "接続"
+perm_speak = "発言"
 queue_title = "📝 キューリスト ({page}/{total}ページ)"
 history_title = "🕘 再生履歴 ({page}/{total}ページ)"
 

@@ -94,7 +94,8 @@ async fn play_without_voice_channel_notifies_error() {
 			Notice {
 				key: "error.not_in_voice",
 				args: vec![],
-				card: None
+				card: None,
+				lists: vec![],
 			}
 		)]
 	);
@@ -299,7 +300,8 @@ async fn last_track_end_notifies_completed() {
 			Notice {
 				key: "play.completed",
 				args: vec![],
-				card: None
+				card: None,
+				lists: vec![],
 			}
 		))
 	);
