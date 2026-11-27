@@ -66,6 +66,7 @@ fn voice() -> VoiceConfig {
 	VoiceConfig {
 		call_timeout_secs: 5,
 		join_timeout_secs: 5,
+		access_check_timeout_secs: 3,
 	}
 }
 
@@ -262,6 +263,7 @@ fn outer_voice_limits_cover_inner_steps() {
 	let config = VoiceConfig {
 		call_timeout_secs: 10,
 		join_timeout_secs: 15,
+		access_check_timeout_secs: 3,
 	};
 	let limits = VoiceLimits::new(&config);
 	let call = Duration::from_secs(10);
@@ -273,6 +275,8 @@ fn outer_voice_limits_cover_inner_steps() {
 	// 移動: 参加だけ
 	assert_eq!(limits.move_to(), join + OUTER_MARGIN);
 	assert!(limits.move_to() > join);
+	// 参加の前の確認: Bot の役職の取り直し (接続の上限には含めない)
+	assert_eq!(limits.access(), Duration::from_secs(3) + OUTER_MARGIN);
 	// 切断: Call の停止 → 削除
 	assert_eq!(limits.disconnect(), call * 2 + OUTER_MARGIN);
 	assert!(OUTER_MARGIN > Duration::ZERO);
