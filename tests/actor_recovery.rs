@@ -17,6 +17,7 @@ use std::time::Duration;
 
 use actor_env::*;
 use fake_audio::{AudioCall, AudioOp, FakeAudio};
+use watapachi_bot::audio::access::{AccessVerdict, Denial};
 use watapachi_bot::audio::backend::{
 	AudioError, AudioEvent, DisconnectKind, PlayRequest, VoiceHealth,
 };
@@ -1235,4 +1236,25 @@ async fn skipped_last_track_notifies_completed() {
 	let completed = keys.iter().position(|k| *k == "play.completed").unwrap();
 	assert!(skipped < completed);
 	assert!(!started(&env.audio, &b));
+}
+
+#[tokio::test]
+async fn rejoin_denied_uses_rejoin_failed() {
+	let env = Env::new();
+	let (a, b) = (vid('a'), vid('b'));
+	env.set_playlist(&[&a, &b]);
+	env.play(PLAYLIST_URL);
+	wait_until("1 曲目の再生", || started(&env.audio, &a)).await;
+	env.barrier().await;
+
+	env.access.set(AccessVerdict::Denied(Denial::Full));
+	env.send(GuildCommand::Rejoin);
+	wait_until("再接続の失敗の通知", || {
+		env.has_notice("error.rejoin_failed")
+	})
+	.await;
+	env.barrier().await;
+	assert_left_keeping_queue(&env, &[a.clone(), b.clone()]);
+	assert!(!env.has_notice("error.voice_full"));
+	assert_eq!(connects(&env.audio), 1);
 }

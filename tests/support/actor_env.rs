@@ -7,14 +7,16 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::fake_audio::{AudioCall, FakeAudio};
 use crate::fake_notifier::FakeNotifier;
 use crate::fake_resolver::FakeResolver;
+use async_trait::async_trait;
 use rusqlite::{Connection, OpenFlags};
 use tempfile::TempDir;
+use watapachi_bot::audio::access::{AccessVerdict, VoiceAccess};
 use watapachi_bot::audio::backend::{AudioEvent, PlayRequest, TrackId};
 use watapachi_bot::config::Config;
 use watapachi_bot::db::history::{self, HistoryEntry};
@@ -107,10 +109,56 @@ pub fn play_message(query: &str, voice_channel: Option<ChannelId>) -> GuildMessa
 	}
 }
 
+#[derive(Default)]
+struct AccessState {
+	verdict: Option<AccessVerdict>,
+	hang: bool,
+	calls: Vec<(GuildId, ChannelId)>,
+}
+
+/// 試験用の参加の前の確認役。既定は `Allowed`。結果の指定、応答しない確認、呼び出しの記録ができる。
+#[derive(Clone, Default)]
+pub struct FakeAccess {
+	state: Arc<Mutex<AccessState>>,
+}
+
+impl FakeAccess {
+	/// 以後の確認の結果を指定する。
+	pub fn set(&self, verdict: AccessVerdict) {
+		self.state.lock().unwrap().verdict = Some(verdict);
+	}
+
+	/// 以後の確認を返さないようにする (上限時間の打ち切りの試験)。
+	pub fn hang(&self) {
+		self.state.lock().unwrap().hang = true;
+	}
+
+	/// 確認の呼び出しの記録 (ギルド、チャンネル)。
+	pub fn calls(&self) -> Vec<(GuildId, ChannelId)> {
+		self.state.lock().unwrap().calls.clone()
+	}
+}
+
+#[async_trait]
+impl VoiceAccess for FakeAccess {
+	async fn check(&self, guild: GuildId, channel: ChannelId) -> AccessVerdict {
+		let (verdict, hang) = {
+			let mut state = self.state.lock().unwrap();
+			state.calls.push((guild, channel));
+			(state.verdict.clone(), state.hang)
+		};
+		if hang {
+			std::future::pending::<()>().await;
+		}
+		verdict.unwrap_or(AccessVerdict::Allowed)
+	}
+}
+
 /// 試験の環境。偽実装と一時 DB を持つ。
 pub struct Env {
 	pub registry: GuildRegistry,
 	pub audio: FakeAudio,
+	pub access: FakeAccess,
 	pub resolver: FakeResolver,
 	pub notifier: FakeNotifier,
 	pub config: Arc<Config>,
@@ -158,10 +206,12 @@ impl Env {
 	fn build(config: Arc<Config>, db_path: PathBuf, dir: TempDir) -> Self {
 		let db = Database::open(&db_path, &config.db).unwrap();
 		let audio = FakeAudio::default();
+		let access = FakeAccess::default();
 		let resolver = FakeResolver::default();
 		let notifier = FakeNotifier::default();
 		let registry = GuildRegistry::new(ActorDeps {
 			audio: Arc::new(audio.clone()),
+			access: Arc::new(access.clone()),
 			resolver: Arc::new(resolver.clone()),
 			notifier: Arc::new(notifier.clone()),
 			db: db.handles.clone(),
@@ -170,6 +220,7 @@ impl Env {
 		Self {
 			registry,
 			audio,
+			access,
 			resolver,
 			notifier,
 			config,
@@ -280,6 +331,15 @@ impl Env {
 			.rev()
 			.find(|(_, n)| n.key == key)
 			.map(|(_, n)| n.args)
+	}
+
+	/// 指定のキーの通知のうち、最後のものの部品の並びの差し込み。
+	pub fn notice_lists(&self, key: &str) -> Option<Vec<(&'static str, Vec<&'static str>)>> {
+		self.notices()
+			.into_iter()
+			.rev()
+			.find(|(_, n)| n.key == key)
+			.map(|(_, n)| n.lists)
 	}
 
 	/// アクターがここまでのメッセージを処理し終えるまで待つ。

@@ -18,6 +18,7 @@ use std::time::Duration;
 use actor_env::*;
 use fake_audio::{AudioCall, AudioOp, FakeAudio};
 use tokio::time::Instant;
+use watapachi_bot::audio::access::{AccessVerdict, Denial, VoicePermission};
 use watapachi_bot::audio::backend::{AudioError, AudioEvent, DisconnectKind, PlayRequest};
 use watapachi_bot::db::playback::{self, PlaybackState};
 use watapachi_bot::db::queue::{self, NewQueueItem};
@@ -861,4 +862,32 @@ async fn play_during_restore_connect_is_announced_as_queued() {
 
 	end_track(&env, &a).await;
 	wait_until("?p の曲の再生", || started(&env.audio, &b)).await;
+}
+
+#[tokio::test]
+async fn restore_denied_keeps_queue_and_uses_restore_notice() {
+	let env = Env::new();
+	let (a, b) = (vid('a'), vid('b'));
+	env.set_videos(&[&a, &b]);
+	save_state(&env, saved_state(guild(), &a, SAVED_AT, false)).await;
+	enqueue(&env, guild(), &[&b]).await;
+	env.access.set(AccessVerdict::Denied(Denial::Missing(vec![
+		VoicePermission::Connect,
+	])));
+
+	restore(&env, Some(1)).await;
+	wait_until("復元の失敗の通知", || {
+		env.has_notice("error.restore_failed")
+	})
+	.await;
+	env.barrier().await;
+	assert!(!env.has_notice("error.voice_no_permission"));
+	assert!(!env.has_notice("error.connect_failed"));
+	assert!(env
+		.audio
+		.calls()
+		.iter()
+		.all(|c| !matches!(c, AudioCall::Connect { .. })));
+	assert_eq!(env.queue_ids(), vec![a.clone(), b.clone()]);
+	assert!(env.playback().is_empty());
 }

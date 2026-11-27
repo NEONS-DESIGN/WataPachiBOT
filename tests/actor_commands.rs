@@ -16,6 +16,7 @@ use std::time::Duration;
 
 use actor_env::*;
 use fake_audio::{AudioCall, AudioOp, FakeAudio};
+use watapachi_bot::audio::access::{AccessVerdict, Denial, VoicePermission};
 use watapachi_bot::audio::backend::{AudioError, AudioEvent, TrackId};
 use watapachi_bot::db::settings::{self, GuildSettings};
 use watapachi_bot::domain::{ChannelId, Priority, ResolveError, ResolveErrorCode, VideoId};
@@ -1194,4 +1195,111 @@ async fn lookup_failure_keys_by_kind_and_code() {
 	assert!(env.queue_ids().is_empty());
 	// 1 曲も取り出していないので、再生の終了は通知しない
 	assert!(!env.has_notice("play.completed"));
+}
+
+#[tokio::test]
+async fn play_denied_by_permission_skips_connect_and_explains() {
+	let env = Env::new();
+	let a = vid('a');
+	env.set_videos(&[&a]);
+	env.access.set(AccessVerdict::Denied(Denial::Missing(vec![
+		VoicePermission::Connect,
+	])));
+
+	env.play(&watch_url(&a));
+	wait_until("権限の不足の通知", || {
+		env.has_notice("error.voice_no_permission")
+	})
+	.await;
+	env.barrier().await;
+	assert_eq!(
+		env.notice_args("error.voice_no_permission"),
+		Some(vec![("channel", format!("<#{VOICE}>"))])
+	);
+	assert_eq!(
+		env.notice_lists("error.voice_no_permission"),
+		Some(vec![("permissions", vec!["ui.perm_connect"])])
+	);
+	assert_eq!(env.access.calls(), vec![(guild(), voice())]);
+	assert_eq!(connects(&env.audio), 0);
+	assert!(!env.has_notice("error.connect_failed"));
+	assert!(env.queue_ids().is_empty());
+	assert!(env.playback().is_empty());
+}
+
+#[tokio::test]
+async fn play_into_full_channel_explains() {
+	let env = Env::new();
+	let a = vid('a');
+	env.set_videos(&[&a]);
+	env.access.set(AccessVerdict::Denied(Denial::Full));
+
+	env.play(&watch_url(&a));
+	wait_until("満員の通知", || env.has_notice("error.voice_full")).await;
+	env.barrier().await;
+	assert_eq!(
+		env.notice_args("error.voice_full"),
+		Some(vec![("channel", format!("<#{VOICE}>"))])
+	);
+	assert_eq!(connects(&env.audio), 0);
+	assert!(!env.has_notice("error.connect_failed"));
+}
+
+#[tokio::test]
+async fn unknown_access_still_connects() {
+	let env = Env::new();
+	let a = vid('a');
+	env.access.set(AccessVerdict::Unknown);
+	play_one(&env, &a).await;
+	assert_eq!(connects(&env.audio), 1);
+	assert_eq!(env.access.calls(), vec![(guild(), voice())]);
+}
+
+#[tokio::test]
+async fn move_denied_does_not_move() {
+	let env = Env::new();
+	let a = vid('a');
+	play_one(&env, &a).await;
+	env.access.set(AccessVerdict::Denied(Denial::Missing(vec![
+		VoicePermission::ViewChannel,
+	])));
+
+	env.send_from(GuildCommand::Move, Some(other_voice()));
+	wait_until("権限の不足の通知", || {
+		env.has_notice("error.voice_no_permission")
+	})
+	.await;
+	env.barrier().await;
+	assert_eq!(
+		env.notice_args("error.voice_no_permission"),
+		Some(vec![("channel", format!("<#{OTHER_VOICE}>"))])
+	);
+	assert_eq!(
+		count_calls(&env.audio, |c| matches!(c, AudioCall::MoveTo(_))),
+		0
+	);
+	assert!(!env.has_notice("control.moved"));
+	assert_eq!(env.playback()[0].voice_channel_id, voice());
+	assert_eq!(stops(&env.audio), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn move_check_hang_falls_back_to_moving() {
+	let env = Env::new();
+	let a = vid('a');
+	play_one(&env, &a).await;
+	env.access.hang();
+
+	// アクターは確認を待っている間、目印にも応答しないため、確認の呼び出しを目印にする
+	env.send_from(GuildCommand::Move, Some(other_voice()));
+	wait_until("移動先の確認", || env.access.calls().len() == 2).await;
+	settle().await;
+	assert!(!env.has_notice("control.moved"));
+	let limit = watapachi_bot::audio::limits::VoiceLimits::new(&env.config.voice).access();
+	tokio::time::advance(limit).await;
+	wait_until("移動の通知", || env.has_notice("control.moved")).await;
+	assert!(env
+		.audio
+		.calls()
+		.contains(&AudioCall::MoveTo(other_voice())));
 }

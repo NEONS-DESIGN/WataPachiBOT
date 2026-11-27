@@ -16,6 +16,7 @@ use tokio::time::Instant;
 use super::actor;
 use super::message::GuildMessage;
 use super::notifier::Notifier;
+use crate::audio::access::VoiceAccess;
 use crate::audio::backend::AudioBackend;
 use crate::config::Config;
 use crate::db::DbHandles;
@@ -26,6 +27,8 @@ use crate::resolver::Resolver;
 #[derive(Clone)]
 pub struct ActorDeps {
 	pub audio: Arc<dyn AudioBackend>,
+	/// 参加の前の確認役 (権限と満員)
+	pub access: Arc<dyn VoiceAccess>,
 	pub resolver: Arc<dyn Resolver>,
 	pub notifier: Arc<dyn Notifier>,
 	pub db: DbHandles,

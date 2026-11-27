@@ -39,6 +39,7 @@ use tokio::time::Instant;
 use twilight_gateway::{ConfigBuilder, Shard, ShardId};
 use twilight_http::Client;
 
+use crate::audio::access::VoiceAccess;
 use crate::audio::backend::AudioBackend;
 use crate::audio::chunked::{ChunkConfig, UrlRefresher};
 use crate::audio::pipe::PipeSpec;
@@ -48,6 +49,7 @@ use crate::db::{settings, Database};
 use crate::gateway::dispatcher::{Dispatcher, DispatcherParts};
 use crate::gateway::notifier::DiscordNotifier;
 use crate::gateway::shard::{new_cache, presence, run_shard, ShardExit, INTENTS};
+use crate::gateway::voice_access::DiscordVoiceAccess;
 use crate::guild::notifier::Notifier;
 use crate::guild::registry::{ActorDeps, GuildRegistry};
 use crate::lang::GuildLangs;
@@ -468,8 +470,15 @@ async fn connect(
 		config.ui.clone(),
 		config.bot.prefix.clone(),
 	));
+	let access = Arc::new(DiscordVoiceAccess::new(
+		Arc::clone(&http),
+		Arc::clone(&cache),
+		bot_id,
+		Duration::from_secs(config.voice.access_check_timeout_secs),
+	));
 	let registry = Arc::new(GuildRegistry::new(ActorDeps {
 		audio: audio as Arc<dyn AudioBackend>,
+		access: access as Arc<dyn VoiceAccess>,
 		resolver: resolver as Arc<dyn Resolver>,
 		notifier: Arc::clone(&notifier) as Arc<dyn Notifier>,
 		db: database.handles.clone(),

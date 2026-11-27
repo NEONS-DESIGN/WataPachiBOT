@@ -21,8 +21,9 @@ use super::supervise::Trigger;
 use super::GuildActor;
 use crate::db::{playback, settings};
 use crate::domain::ChannelId;
+use crate::guild::actor::check_access;
 use crate::guild::message::{ClearRange, CommandContext, GuildCommand};
-use crate::guild::notices::{keys, plain, titled, with_args};
+use crate::guild::notices::{denial_notice, keys, plain, titled, with_args};
 use crate::guild::state::{PlayerState, SessionChannels};
 use crate::guild::store::{self, QueueEdit};
 
@@ -524,6 +525,7 @@ impl GuildActor {
 	/// `?move`: 実行者のボイスチャンネルへ移動する。再生は止めない。
 	///
 	/// - Bot が接続していなければ、実行者がボイスチャンネルに居なければ、同じチャンネルなら、エラーを通知する
+	/// - 移動の前に移動先の権限と満員を確かめ (`check_access`)、断るなら理由を通知して移動しない
 	/// - 移動できたら、以後の `playback_state` の宛先を移動先にし、今の `playback_state` も書き換える
 	/// - 移動できたら自動退出の計時を取り消す (移動先の聞き手の人数は、改めて届く人数の変化で判断する)
 	/// - 移動できたら健全性の判定の基準と回数を捨てる (移動先で送信の暗号化が始め直されるため)。
@@ -550,6 +552,13 @@ impl GuildActor {
 		};
 		if channels.voice == target {
 			self.notify(reply, plain(keys::SAME_CHANNEL));
+			return;
+		}
+		let access_limit = self.voice_limits().access();
+		let access = self.deps.access.clone();
+		if let Some(denial) = check_access(access.as_ref(), access_limit, self.guild, target).await
+		{
+			self.notify(reply, denial_notice(&denial, target));
 			return;
 		}
 		// バックエンドの参加の上限 (`voice.join_timeout_secs`) より長く待つ

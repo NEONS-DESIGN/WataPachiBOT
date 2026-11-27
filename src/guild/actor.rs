@@ -26,13 +26,16 @@ use tokio::task::{AbortHandle, Id, JoinError, JoinSet};
 use tokio::time::Instant;
 
 use super::message::{CommandContext, GuildMessage, LookupKind, QueryResult, TickKind, VoiceLink};
-use super::notices::{counted, keys, lookup_failure_key, plain, titled, titled_code, with_args};
+use super::notices::{
+	counted, denial_notice, keys, lookup_failure_key, plain, titled, titled_code, with_args,
+};
 use super::notifier::{Card, MessageRef, Notice, Notifier, PlaylistCard, TrackCard};
 use super::prefetch::Prefetcher;
 use super::query::{self, Query};
 use super::registry::{ActorDeps, RegistryInner};
 use super::state::{CurrentTrack, PlayerState, SessionChannels};
 use super::store::{self, item_from_meta, item_from_stream};
+use crate::audio::access::{AccessVerdict, Denial, VoiceAccess};
 use crate::audio::backend::{AudioError, AudioEvent, PlayRequest, TrackId, VoiceSession};
 use crate::audio::limits::VoiceLimits;
 use crate::config::DefaultsConfig;
@@ -521,6 +524,8 @@ impl GuildActor {
 	///   切断は `VoiceLimits::disconnect` で打ち切り、失敗はログに残すだけ
 	/// - 参加を始める前に取り消しの印 (`connect_cancel`) が立っていたら接続せず、
 	///   `AudioError::NotConnected` を返す (`on_connected` が古い結果として捨てる)
+	/// - 参加の前に権限と満員を確かめる (`check_access`)。断られたら接続せずに `AudioError::Denied` を返す。
+	///   確認の後にも取り消しの印を見る (確認は REST を待つことがあるため)
 	/// - セッションの始めと、回復の再接続で使う (回復ではセッションの番号を変えない)
 	///
 	/// # 引数
@@ -534,21 +539,34 @@ impl GuildActor {
 	fn spawn_connect(&mut self, channel: ChannelId, previous: Option<Box<dyn VoiceSession>>) {
 		let session = self.session;
 		let audio = self.deps.audio.clone();
+		let access = self.deps.access.clone();
 		let guild = self.guild;
 		let events = self.tx.clone();
 		let limit = self.voice_limits().connect();
+		let access_limit = self.voice_limits().access();
 		let disconnect_limit = self.voice_limits().disconnect();
 		let cancel = Arc::new(AtomicBool::new(false));
 		self.connect_cancel = Arc::clone(&cancel);
 		self.spawn_task(TaskKind::Connect(session), async move {
+			let cancelled = || GuildMessage::Connected {
+				session,
+				result: Err(AudioError::NotConnected),
+			};
 			if let Some(previous) = previous {
 				disconnect_within(guild, disconnect_limit, previous).await;
 			}
 			if cancel.load(Ordering::Acquire) {
+				return cancelled();
+			}
+			if let Some(denial) = check_access(access.as_ref(), access_limit, guild, channel).await
+			{
 				return GuildMessage::Connected {
 					session,
-					result: Err(AudioError::NotConnected),
+					result: Err(AudioError::Denied(denial)),
 				};
+			}
+			if cancel.load(Ordering::Acquire) {
+				return cancelled();
 			}
 			let result = with_timeout(limit, audio.connect(guild, channel, events)).await;
 			GuildMessage::Connected {
@@ -839,7 +857,11 @@ impl GuildActor {
 					return;
 				}
 				if let Some(channels) = self.channels {
-					self.notify(channels.text, plain(keys::CONNECT_FAILED));
+					let notice = match &error {
+						AudioError::Denied(denial) => denial_notice(denial, channels.voice),
+						_ => plain(keys::CONNECT_FAILED),
+					};
+					self.notify(channels.text, notice);
 				}
 				// 削除の失敗は leave_and_clear がログに残す。接続の失敗はすでに通知した
 				let _ = self.leave_and_clear().await;
@@ -2155,6 +2177,53 @@ async fn with_timeout<T>(
 async fn disconnect_within(guild: GuildId, limit: Duration, session: Box<dyn VoiceSession>) {
 	if let Err(error) = with_timeout(limit, session.disconnect()).await {
 		tracing::warn!(guild = guild.get(), %error, "切断に失敗しました");
+	}
+}
+
+/// 参加の前に、Bot がボイスチャンネルに入れるかを確かめる。
+///
+/// - 上限時間 (`VoiceLimits::access`) を過ぎたら、確かめられなかったものとして参加を許す
+/// - 断るときは WARN に理由を残す
+/// - アクターの外 (別タスク) でも使えるよう、アクターを借りない
+///
+/// # 引数
+/// - `access`: 確認役
+/// - `limit`: 上限時間
+/// - `guild`: ギルド
+/// - `channel`: 入ろうとするボイスチャンネル
+///
+/// # 戻り値
+/// 断る理由。参加してよい、または確かめられなければ None
+///
+/// # 呼び出し例
+/// ```ignore
+/// if let Some(denial) = check_access(access.as_ref(), limit, guild, channel).await { /* 断る */ }
+/// ```
+pub(super) async fn check_access(
+	access: &dyn VoiceAccess,
+	limit: Duration,
+	guild: GuildId,
+	channel: ChannelId,
+) -> Option<Denial> {
+	match tokio::time::timeout(limit, access.check(guild, channel)).await {
+		Ok(AccessVerdict::Denied(denial)) => {
+			tracing::warn!(
+				guild = guild.get(),
+				channel = channel.get(),
+				%denial,
+				"ボイスチャンネルに入れないため、参加しません"
+			);
+			Some(denial)
+		}
+		Ok(AccessVerdict::Allowed | AccessVerdict::Unknown) => None,
+		Err(_) => {
+			tracing::warn!(
+				guild = guild.get(),
+				channel = channel.get(),
+				"参加の前の確認が上限時間を過ぎたため、確かめずに参加します"
+			);
+			None
+		}
 	}
 }
 
