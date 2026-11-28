@@ -216,9 +216,18 @@ impl<'a> InternalTrack {
                 (Err(InputReadyingError::Waiting), None)
             },
             InputState::Preparing(info) => {
-                let queued_seek = info.queued_seek.take();
+                let result = info.callback.try_recv();
+                // Local patch: keep a queued seek while the input is still being prepared.
+                // Taking it here and returning `Waiting` dropped the seek, so a seek sent
+                // just after `play` (before the first parse finished) was silently lost and
+                // the track played from the start.
+                let queued_seek = if matches!(result, Err(TryRecvError::Empty)) {
+                    None
+                } else {
+                    info.queued_seek.take()
+                };
 
-                let orig_out = match info.callback.try_recv() {
+                let orig_out = match result {
                     Ok(MixerInputResultMessage::Built(parsed, rec)) => {
                         *input = InputState::Ready(parsed, rec);
                         mix_state.reset();

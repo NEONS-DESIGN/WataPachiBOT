@@ -2,9 +2,10 @@
 //!
 //! - `EventSink` はセッションごとの「開いている」印と、メールボックスが満杯のときの待ち行列を持つ
 //! - `ended_event` と `disconnect_kind` は Songbird の状態からアクターへのイベントを決める (純粋)
+//! - `is_left_channel` は、切断が移動の前のチャンネルの接続の終わりかを決める (純粋)
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -17,6 +18,29 @@ use crate::audio::backend::{AudioError, AudioEvent, DisconnectKind, TrackId};
 use crate::audio::chunked::ChunkFailure;
 use crate::domain::GuildId;
 use crate::guild::message::GuildMessage;
+
+/// チャンネルが分からないことを表す値 (`EventSink::voice_channel`)。
+const UNKNOWN_CHANNEL: u64 = 0;
+
+/// 切断が、移動の前のチャンネルの接続の終わりかを決める。
+///
+/// - `?move` で別のチャンネルへ移ると、Discord は前のチャンネルの音声の接続を 4022 (`CallTerminated`) で閉じる。
+///   Songbird が新しい接続を始める前にこれを受けると、今の接続の切断として報告する
+/// - 報告に付くチャンネルが、セッションの今のチャンネル (移動先) と違えば、前のチャンネルの終わりとみなす
+/// - 今のチャンネルが分からなければ (試験の Call など) 前のチャンネルとはみなさない
+///
+/// # 引数
+/// - `current`: セッションの今のチャンネル (`EventSink::voice_channel`)。0 は不明
+/// - `disconnected`: 切断の報告に付いたチャンネル (`DisconnectData::channel_id`)
+///
+/// # 戻り値
+/// 前のチャンネルの終わりなら true
+///
+/// # 例
+/// `if is_left_channel(sink.voice_channel(), data.channel_id.get()) { /* 切断として扱わない */ }`
+pub fn is_left_channel(current: u64, disconnected: u64) -> bool {
+	current != UNKNOWN_CHANNEL && current != disconnected
+}
 
 /// 終わった曲のイベントを決める。
 ///
@@ -94,6 +118,10 @@ pub struct EventSink {
 	tx: mpsc::Sender<GuildMessage>,
 	send_timeout: Duration,
 	backlog: Arc<std::sync::Mutex<Backlog>>,
+	/// セッションの今のボイスチャンネル (移動中は移動先)。0 は不明
+	voice_channel: Arc<AtomicU64>,
+	/// 前のチャンネルの終わりとして、アクターへ送らなかった切断があったか (移動に失敗したときに送り直す)
+	held_disconnect: Arc<AtomicBool>,
 }
 
 impl EventSink {
@@ -114,7 +142,44 @@ impl EventSink {
 			tx,
 			send_timeout,
 			backlog: Arc::new(std::sync::Mutex::new(Backlog::default())),
+			voice_channel: Arc::new(AtomicU64::new(UNKNOWN_CHANNEL)),
+			held_disconnect: Arc::new(AtomicBool::new(false)),
 		}
+	}
+
+	/// セッションの今のボイスチャンネル。0 は不明。
+	///
+	/// # 例
+	/// `let current = sink.voice_channel();`
+	pub fn voice_channel(&self) -> u64 {
+		self.voice_channel.load(Ordering::SeqCst)
+	}
+
+	/// セッションの今のボイスチャンネルを記録する。接続の直後と、移動を始める前と失敗した後に呼ぶ。
+	///
+	/// # 引数
+	/// - `channel`: チャンネルの ID。0 は不明
+	///
+	/// # 例
+	/// `sink.set_voice_channel(channel.get());`
+	pub fn set_voice_channel(&self, channel: u64) {
+		self.voice_channel.store(channel, Ordering::SeqCst);
+	}
+
+	/// 前のチャンネルの終わりとして、切断を送らなかったことを記録する。
+	///
+	/// # 例
+	/// `sink.hold_disconnect();`
+	pub fn hold_disconnect(&self) {
+		self.held_disconnect.store(true, Ordering::SeqCst);
+	}
+
+	/// 送らなかった切断があったかを返し、記録を消す。
+	///
+	/// # 例
+	/// `if sink.take_held_disconnect() { sink.emit(AudioEvent::Disconnected { reason: DisconnectKind::Lost }); }`
+	pub fn take_held_disconnect(&self) -> bool {
+		self.held_disconnect.swap(false, Ordering::SeqCst)
 	}
 
 	/// ログに出すサーバー。

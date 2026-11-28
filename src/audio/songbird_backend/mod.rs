@@ -51,7 +51,8 @@ use tokio::sync::{mpsc, Mutex, OwnedMutexGuard};
 use tokio::time::timeout;
 
 use crate::audio::backend::{
-	AudioBackend, AudioError, AudioEvent, PlayRequest, TrackId, VoiceHealth, VoiceSession,
+	AudioBackend, AudioError, AudioEvent, DisconnectKind, PlayRequest, TrackId, VoiceHealth,
+	VoiceSession,
 };
 use crate::audio::chunked::{ChunkCancel, ChunkConfig, ChunkFailure, ChunkedRequest, UrlRefresher};
 use crate::audio::pipe::{PipeCancel, PipeInput, PipeSpec};
@@ -64,7 +65,7 @@ use crate::platform::job::Job;
 mod events;
 mod gate;
 
-pub use events::{disconnect_kind, ended_event, EventSink};
+pub use events::{disconnect_kind, ended_event, is_left_channel, EventSink};
 pub use gate::{effective_position, track_start_ready, TrackGate};
 
 /// `watch_url` の中で動画 ID に置き換える部分。
@@ -284,15 +285,30 @@ impl EventHandler for CoreHandler {
 			}
 			EventContext::DriverDisconnect(data) => {
 				let reason = disconnect_kind(data.reason);
+				let channel = data.channel_id.0.get();
+				let left = is_left_channel(self.sink.voice_channel(), channel);
 				tracing::info!(
 					guild = self.sink.guild().get(),
+					channel,
 					songbird_reason = ?data.reason,
 					songbird_kind = ?data.kind,
 					kind = ?reason,
+					left,
 					"ボイスの接続が切れました"
 				);
+				// 前のチャンネルの終わりでも、新しい接続ができるまではつながっていない
 				self.sink.set_link_up(false);
-				self.sink.emit(AudioEvent::Disconnected { reason });
+				if left {
+					// 移動の前のチャンネルの接続の終わり。新しい接続は Songbird が続けて作る (`DriverConnect`)
+					tracing::info!(
+						guild = self.sink.guild().get(),
+						channel,
+						"移動の前のチャンネルの接続の終わりのため、切断として扱いません"
+					);
+					self.sink.hold_disconnect();
+				} else {
+					self.sink.emit(AudioEvent::Disconnected { reason });
+				}
 			}
 			EventContext::DriverReconnect(_) => {
 				self.sink.set_link_up(true);
@@ -816,21 +832,52 @@ impl VoiceSession for SongbirdSession {
 
 	/// 同じ Call のまま別のボイスチャンネルへ移る。上限は `join_timeout`。
 	///
+	/// - 参加を頼む前に、今のチャンネルを移動先にする。Discord が前のチャンネルの接続を 4022 で閉じても、
+	///   `CoreHandler` が前のチャンネルの終わりとして切断を送らない (送ると回復が走り、音が途切れる)
+	/// - 参加に失敗したら今のチャンネルを戻し、送らなかった切断があれば `Lost` として送る
+	///   (前のチャンネルの接続はもう無いため、アクターの回復に任せる)。時間切れはアクターが切断として扱うため送らない
+	///
+	/// # 引数
+	/// - `channel`: 移動先のボイスチャンネル
+	///
 	/// # エラー
 	/// manager が無ければ `NotConnected`、参加の失敗は `Connect`、時間切れは `Timeout`
+	///
+	/// # 呼び出し例
+	/// ```ignore
+	/// session.move_to(target).await?;
+	/// ```
 	async fn move_to(&mut self, channel: ChannelId) -> Result<(), AudioError> {
 		let Some(manager) = self.manager.clone() else {
 			return Err(AudioError::NotConnected);
 		};
 		let guild = self.guild;
-		bounded(self.join_timeout(), async move {
+		// 前の移動で送らなかった切断の記録は、この移動に持ち込まない
+		self.sink.take_held_disconnect();
+		let previous = self.sink.voice_channel();
+		self.sink.set_voice_channel(channel.get());
+		let result = bounded(self.join_timeout(), async move {
 			manager
 				.join(guild, channel)
 				.await
 				.map(|_| ())
 				.map_err(|error| AudioError::Connect(error.to_string()))
 		})
-		.await
+		.await;
+		if let Err(error) = &result {
+			self.sink.set_voice_channel(previous);
+			if self.sink.take_held_disconnect() && !matches!(error, AudioError::Timeout) {
+				tracing::warn!(
+					guild = guild.get(),
+					%error,
+					"移動に失敗し、前のチャンネルの接続も終わっているため、切断として知らせます"
+				);
+				self.sink.emit(AudioEvent::Disconnected {
+					reason: DisconnectKind::Lost,
+				});
+			}
+		}
+		result
 	}
 
 	/// 切断する。この切断ではイベントを送らない。
@@ -1090,6 +1137,7 @@ impl AudioBackend for SongbirdBackend {
 			}
 		};
 		let sink = EventSink::new(guild, events, self.event_send_timeout);
+		sink.set_voice_channel(channel.get());
 		let session = SongbirdSession::new(
 			guild,
 			call,

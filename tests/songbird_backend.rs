@@ -33,8 +33,8 @@ use watapachi_bot::audio::chunked::{
 use watapachi_bot::audio::limits::{VoiceLimits, OUTER_MARGIN};
 use watapachi_bot::audio::pipe::PipeSpec;
 use watapachi_bot::audio::songbird_backend::{
-	disconnect_kind, effective_position, ended_event, session_from_call, track_start_ready,
-	CallOwners, EventSink, InputCancel, InputFactory, TrackGate,
+	disconnect_kind, effective_position, ended_event, is_left_channel, session_from_call,
+	track_start_ready, CallOwners, EventSink, InputCancel, InputFactory, TrackGate,
 };
 use watapachi_bot::config::VoiceConfig;
 use watapachi_bot::domain::{GuildId, ResolveError, ResolvedStream, VideoId};
@@ -349,6 +349,31 @@ async fn newer_session_owns_the_call() {
 	assert!(owners.is_owner(guild(1), new).await);
 	assert!(owners.release(guild(1), new).await);
 	assert!(!owners.is_owner(guild(1), new).await);
+}
+
+/// `?move` の後に Discord が前のチャンネルの接続を閉じた (4022) 切断は、前のチャンネルの終わりとみなすこと。
+#[test]
+fn disconnect_of_left_channel_is_recognized() {
+	// 移動先が今のチャンネルで、切断の報告は前のチャンネル
+	assert!(is_left_channel(20, 10));
+	// 今のチャンネルの切断は、本当の切断
+	assert!(!is_left_channel(20, 20));
+	// 今のチャンネルが分からなければ、本当の切断として扱う
+	assert!(!is_left_channel(0, 10));
+}
+
+/// 送り口は今のチャンネルと、送らなかった切断の記録を持つこと。記録は 1 回だけ取り出せること。
+#[test]
+fn event_sink_tracks_channel_and_held_disconnect() {
+	let (tx, _rx) = mpsc::channel(4);
+	let sink = EventSink::new(guild(1), tx, SEND_TIMEOUT);
+	assert_eq!(sink.voice_channel(), 0, "既定は不明");
+	sink.set_voice_channel(20);
+	assert_eq!(sink.clone().voice_channel(), 20, "複製も同じ状態を指す");
+	assert!(!sink.take_held_disconnect());
+	sink.hold_disconnect();
+	assert!(sink.take_held_disconnect());
+	assert!(!sink.take_held_disconnect(), "取り出した後は消える");
 }
 
 #[tokio::test(flavor = "multi_thread")]
