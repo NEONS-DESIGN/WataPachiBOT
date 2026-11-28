@@ -633,7 +633,8 @@ impl GuildActor {
 	/// - 0 人になったら、ギルドの `alone_timeout_secs` (未設定なら既定値) の後に退出する時刻を決める。
 	///   0 秒の設定なら退出しない。すでに数えていれば数え直さない
 	/// - 1 人以上に戻ったら取り消す
-	/// - Idle では何もしない
+	/// - 0 人から 1 人以上に戻ったとき、健全性を判定している (曲の開始を受けた後) なら、猶予を取り直す
+	/// - Idle では何もしない (猶予の取り直しは除く)
 	///
 	/// # 引数
 	/// - `listeners`: Bot 以外の聞き手の人数
@@ -643,7 +644,13 @@ impl GuildActor {
 	/// self.on_voice_members(listeners).await;
 	/// ```
 	pub(super) async fn on_voice_members(&mut self, listeners: u32) {
+		let returned = self.listeners == 0 && listeners > 0;
 		self.listeners = listeners;
+		if returned && self.sup.started_at.is_some() {
+			// 一人の間は DAVE の鍵が無く送らないため、鍵が届くまでの間を猶予として取り直す (?move と同じ)
+			self.sup.judge.reset();
+			self.sup.started_at = Some(Instant::now());
+		}
 		if listeners > 0 {
 			if self.alone.take().is_some() {
 				tracing::debug!(

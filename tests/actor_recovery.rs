@@ -609,6 +609,60 @@ async fn health_is_not_judged_until_track_started() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn listener_return_restarts_grace() {
+	let env = Env::new();
+	let a = vid('a');
+	play_one(&env, &a).await;
+	env.listeners(1);
+	start_track(&env, &a).await;
+	env.audio.set_position(LOST_AT);
+	let health = &env.config.health;
+	let interval = Duration::from_secs(health.check_interval_secs);
+	let grace_ticks = health.dave_grace_secs / health.check_interval_secs;
+	let checks = u64::from(health.unhealthy_checks);
+	let tick = || async {
+		tokio::time::advance(interval).await;
+		settle().await;
+		env.barrier().await;
+	};
+	// 猶予を過ぎるまで健全に送る
+	for _ in 0..grace_ticks + 1 {
+		tick().await;
+	}
+
+	// 一人になると鍵が無くなり、送らなかったフレームだけが増える
+	env.listeners(0);
+	env.audio.set_health_step(VoiceHealth {
+		dave_version: Some(1),
+		encrypted_frames: 0,
+		plaintext_frames: 0,
+		withheld_frames: 50,
+	});
+	for _ in 0..checks * 2 {
+		tick().await;
+	}
+	assert_eq!(connects(&env.audio), 1, "一人の間は回復しない");
+
+	// 聴者が戻ってから鍵が届くまでは、猶予として判定しない
+	env.listeners(1);
+	for _ in 0..checks + 1 {
+		tick().await;
+		assert_eq!(
+			connects(&env.audio),
+			1,
+			"聴者が戻った直後の猶予の間は回復しない"
+		);
+	}
+
+	// 猶予を過ぎても送らない状態が続けば回復する
+	for _ in 0..grace_ticks + checks {
+		tokio::time::advance(interval).await;
+		settle().await;
+	}
+	wait_rejoined(&env, 2, 2).await;
+}
+
+#[tokio::test(start_paused = true)]
 async fn auto_rejoin_limit_pauses_and_suggests_rejoin() {
 	let env = Env::new();
 	let a = vid('a');
