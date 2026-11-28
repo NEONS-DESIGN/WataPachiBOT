@@ -3,7 +3,7 @@
 <p align="center">YouTube の音楽を再生する、Discord 用の音楽 Bot です。<br><a href="https://github.com/NEONS-DESIGN/SatouSioBOT">SatouSioBOT</a> の後継として Rust で作り直し、再生の速さと安定性を重視しています。</p>
 
 <p align="center">
-  <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-v1.99.1-CE422B" alt="Rust"></a>
+  <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-v1.100.1-CE422B" alt="Rust"></a>
   <a href="https://github.com/twilight-rs/twilight"><img src="https://img.shields.io/badge/Twilight-v0.17-6f42c1" alt="Twilight"></a>
   <a href="https://github.com/serenity-rs/songbird"><img src="https://img.shields.io/badge/Songbird-v0.6-3498db" alt="Songbird"></a>
   <a href="https://github.com/yt-dlp/yt-dlp"><img src="https://img.shields.io/badge/yt--dlp-latest-FF0000" alt="yt-dlp"></a>
@@ -90,7 +90,7 @@ Bot 本体は [Twilight](https://github.com/twilight-rs/twilight) (Discord と�
 
 | ソフトウェア | 用途 |
 |---|---|
-| [**Rust**](https://www.rust-lang.org/tools/install) (rustup) | Bot 本体のビルド。版は `rust-toolchain.toml` で 1.99.1 に固定しています。 |
+| [**Rust**](https://www.rust-lang.org/tools/install) (rustup) | Bot 本体のビルド。版は `rust-toolchain.toml` で 1.100.1 に固定しています。 |
 | [**Visual Studio Build Tools**](https://visualstudio.microsoft.com/visual-cpp-build-tools/) | C/C++ のビルドツール (MSVC) と CMake。依存ライブラリのビルドに使います。 |
 | [**uv**](https://github.com/astral-sh/uv) | ワーカーの環境 (Python の venv) の作成と、yt-dlp のインストール・更新 |
 | [**Python 3.14**](https://www.python.org/downloads/) | ワーカーの実行。(`uv python install 3.14` で入れることもできます) |

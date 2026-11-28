@@ -89,11 +89,11 @@ impl FakeResolver {
 				s.resolve_calls
 					.iter()
 					.filter(|(id, _)| id == video_id)
-					.count() + s
-					.refresh_calls
-					.iter()
-					.filter(|(id, _)| id == video_id)
 					.count()
+					+ s.refresh_calls
+						.iter()
+						.filter(|(id, _)| id == video_id)
+						.count()
 			})
 			.unwrap_or_default()
 	}
