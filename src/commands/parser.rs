@@ -184,7 +184,8 @@ fn parse_vol(args: &str) -> Result<ParsedCommand, ParseError> {
 	match args
 		.split_whitespace()
 		.next()
-		.and_then(|t| t.parse::<u16>().ok())
+		.and_then(parse_u32)
+		.and_then(|value| u16::try_from(value).ok())
 	{
 		Some(percent) => Ok(ParsedCommand::Guild(GuildCommand::SetVolume { percent })),
 		None => usage(USAGE_VOL),

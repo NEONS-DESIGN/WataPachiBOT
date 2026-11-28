@@ -110,7 +110,7 @@ fn pnow_forms() {
 		parse("?", "?pnow 3", &limits()),
 		Some(Ok(ParsedCommand::Guild(GuildCommand::PlayNow { index: 3 })))
 	);
-	for text in ["?pnow", "?pnow 0", "?pnow x"] {
+	for text in ["?pnow", "?pnow 0", "?pnow x", "?pnow +2"] {
 		assert_eq!(
 			parse("?", text, &limits()),
 			usage("help.usage_pnow"),
@@ -134,7 +134,7 @@ fn vol_forms() {
 			percent: 500
 		})))
 	);
-	for text in ["?vol", "?vol x", "?vol 70000", "?vol -1"] {
+	for text in ["?vol", "?vol x", "?vol 70000", "?vol -1", "?vol +80"] {
 		assert_eq!(
 			parse("?", text, &limits()),
 			usage("help.usage_vol"),
@@ -254,4 +254,29 @@ fn setting_lang() {
 	for text in ["?setting lang fr", "?setting lang", "?setting lang en ja"] {
 		assert_eq!(parse_text(text), usage("help.usage_setting"), "{text}");
 	}
+}
+
+/// サブコマンドはコマンド名と同じく大文字と小文字を区別しないこと。値に `+` は付けられないこと。
+#[test]
+fn setting_subcommands_ignore_case() {
+	let p = |text: &str| parse("?", text, &limits());
+	assert_eq!(
+		p("?SETTING Lang EN"),
+		Some(Ok(ParsedCommand::Setting(SettingCommand::Lang(Lang::En))))
+	);
+	assert_eq!(
+		p("?setting Limit Queue 10"),
+		Some(Ok(ParsedCommand::Setting(SettingCommand::QueueLimit(10))))
+	);
+	assert_eq!(
+		p("?setting AutoLeave 0"),
+		Some(Ok(ParsedCommand::Setting(SettingCommand::AutoLeave(0))))
+	);
+	assert_eq!(
+		p("?setting Admin ADD <@123>"),
+		Some(Ok(ParsedCommand::Setting(SettingCommand::AdminAdd(
+			Id::new(123)
+		))))
+	);
+	assert_eq!(p("?setting limit queue +10"), usage("help.usage_setting"));
 }

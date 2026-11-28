@@ -16,7 +16,7 @@ use crate::guild::notifier::Notice;
 use crate::messages::Messages;
 use crate::ui::embed::{
 	notice_embed, track_page, truncate, TrackLine, COLOR_GREEN, FIELD_NAME_LIMIT,
-	FIELD_VALUE_LIMIT, MAX_FIELDS, PER_PAGE,
+	FIELD_VALUE_LIMIT, MAX_FIELDS, PER_PAGE, TITLE_LIMIT,
 };
 use crate::ui::pagination::{clamp_page, page_buttons, total_pages, PageKind};
 
@@ -94,7 +94,9 @@ pub async fn help_page(
 		("autoleave_max", autoleave_max.as_str()),
 	];
 	let fields = messages.fields(HELP_PAGE_KEYS[index], &args);
-	let mut builder = EmbedBuilder::new().title(title).color(COLOR_GREEN);
+	let mut builder = EmbedBuilder::new()
+		.title(truncate(&title, TITLE_LIMIT))
+		.color(COLOR_GREEN);
 	for (name, value) in fields.into_iter().take(MAX_FIELDS) {
 		builder = builder.field(EmbedFieldBuilder::new(
 			truncate(&name, FIELD_NAME_LIMIT),

@@ -548,7 +548,7 @@ pub fn track_page(title: String, lines: &[TrackLine], ui: &UiConfig) -> Embed {
 		used += separator + row_len;
 	}
 	EmbedBuilder::new()
-		.title(title)
+		.title(truncate(&title, TITLE_LIMIT))
 		.description(description)
 		.color(COLOR_BLUE)
 		.build()

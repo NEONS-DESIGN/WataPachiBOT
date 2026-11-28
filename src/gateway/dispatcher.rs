@@ -11,6 +11,7 @@
 //! - DB を待つ処理は `DB_WAIT_LIMIT` で打ち切り、`error.read_failed` などを返す
 //! - Discord への送信の失敗はログだけ残す
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -112,6 +113,9 @@ pub struct Dispatcher {
 	/// 終了の処理に入ったか。以後はメッセージとボタンに応答しない
 	stopped: AtomicBool,
 	ready: Mutex<ReadyGate>,
+	/// 聴者の数の送り直しをしているギルドと、送り直しに Bot 自身の更新が含まれるか。
+	/// 送り直しはギルドごとに 1 本にまとめる (混雑の間にボイスの更新が続いても、タスクとメールボックスの枠を増やさない)
+	voice_resends: Mutex<HashMap<GuildId, bool>>,
 }
 
 impl Dispatcher {
@@ -140,6 +144,7 @@ impl Dispatcher {
 			accepting: AtomicBool::new(false),
 			stopped: AtomicBool::new(false),
 			ready: Mutex::new(ReadyGate::new(wait)),
+			voice_resends: Mutex::new(HashMap::new()),
 		})
 	}
 
@@ -720,17 +725,37 @@ impl Dispatcher {
 	/// - アクターが動いていなければ送らない。混雑で送れなければ `gateway.event_send_timeout_secs` まで
 	///   数え直して送り直し、それでも送れなければ warn のログを残す
 	/// - 最初の送信はその場で行い、混雑のときだけ送り直しを別タスクで行う
+	/// - 送り直しはギルドごとに 1 本だけ。送り直しの間の更新は、送り直しのタスクが毎回数え直すため拾われる
+	///   (Bot 自身の更新があったことだけを引き継ぐ)
+	///
+	/// # 引数
+	/// - `guild`: 更新のあったギルド
+	/// - `user`: 状態が変わった利用者
+	///
+	/// # 呼び出し例
+	/// ```ignore
+	/// self.on_voice_state(guild, state.user_id);
+	/// ```
 	fn on_voice_state(self: &Arc<Self>, guild: GuildId, user: UserId) {
 		let own = user == self.bot_id;
+		{
+			let mut resends = self.lock_voice_resends();
+			if let Some(pending_own) = resends.get_mut(&guild) {
+				*pending_own |= own;
+				return;
+			}
+		}
 		if self.try_send_listeners(guild, own) != Err(SendError::Busy) {
 			return;
 		}
+		self.lock_voice_resends().insert(guild, own);
 		let this = Arc::clone(self);
 		tokio::spawn(async move {
 			let limit = Duration::from_secs(this.config.gateway.event_send_timeout_secs);
 			let deadline = Instant::now() + limit;
 			loop {
 				if Instant::now() >= deadline {
+					this.lock_voice_resends().remove(&guild);
 					tracing::warn!(
 						guild = guild.get(),
 						"アクターが混み合っているため聴者の数を届けられませんでした"
@@ -738,11 +763,26 @@ impl Dispatcher {
 					return;
 				}
 				tokio::time::sleep(VOICE_RETRY_INTERVAL).await;
+				// 送り直しの間に届いた Bot 自身の更新も含めて数え直す。
+				// 送れたら同じロックの中で印を外す (外した後の更新は新しい送信として扱われる)
+				let mut resends = this.lock_voice_resends();
+				let own = resends.get(&guild).copied().unwrap_or(own);
 				if this.try_send_listeners(guild, own) != Err(SendError::Busy) {
+					resends.remove(&guild);
 					return;
 				}
 			}
 		});
+	}
+
+	/// 送り直しの表をロックする。毒されていても中身を使う (値は単純な印のため)。
+	///
+	/// # 呼び出し例
+	/// `self.lock_voice_resends().remove(&guild);`
+	fn lock_voice_resends(&self) -> std::sync::MutexGuard<'_, HashMap<GuildId, bool>> {
+		self.voice_resends
+			.lock()
+			.unwrap_or_else(PoisonError::into_inner)
 	}
 
 	/// 聴者の数を数えてアクターへ 1 回送る。
