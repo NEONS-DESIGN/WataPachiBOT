@@ -8,11 +8,12 @@
 //! - どのサブコマンドでも、最初に自分の優先度を確かめ、低ければ NORMAL へ上げる
 //!   (タスクスケジューラの既定の優先度で起動しても、ワーカーなどの子プロセスを NORMAL で起動するため)
 
+use std::future::Future;
 use std::process::ExitCode;
 use std::time::Duration;
 
 use anyhow::Context as _;
-use watapachi_bot::app::{self, AppPaths};
+use watapachi_bot::app::{self, AppPaths, Finished};
 use watapachi_bot::config::Config;
 use watapachi_bot::platform::priority;
 use watapachi_bot::platform::service::{self, InstallOptions};
@@ -65,9 +66,6 @@ const SERVICE_UNINSTALLED: &str = "解除しました";
 const DEFAULT_SHUTDOWN_TIMEOUT_SECS: u64 = 20;
 /// 解除で停止を待つ時間に、終了処理の上限へ足す余裕 (秒)。
 const UNINSTALL_WAIT_MARGIN_SECS: u64 = 10;
-/// `stop` で終わりを待つ時間に、終了処理の上限へ足す余裕 (秒)。
-/// 再起動の前のスクリプトは、予告の 60 秒のうち 30 秒の時点で送るため、上限 20 秒と合わせて 60 秒に収まる値にする
-const STOP_WAIT_MARGIN_SECS: u64 = 5;
 /// `stop` で Bot が終わったときの表示。
 const STOP_DONE: &str = "Bot は終了処理をして止まりました";
 /// `stop` で Bot が動いていなかったときの表示。
@@ -84,9 +82,6 @@ const PRIORITY_MEMORY_FAILED: &str = "プロセスのメモリ優先度を確か
 
 /// 使い方の誤りの終了コード。
 const EXIT_USAGE: u8 = 2;
-/// `run` を終えた後、ランタイムに残った処理 (ブロッキングのスレッドなど) を待つ上限。
-/// 終了処理の上限 (`shutdown.timeout_secs`) の後に足されるため短く取る。
-const RUNTIME_SHUTDOWN_GRACE: Duration = Duration::from_secs(1);
 
 /// 引数を解釈して実行する。
 ///
@@ -143,18 +138,9 @@ fn raise_priority() {
 /// # 例
 /// `let code = run();`
 fn run() -> ExitCode {
-	let runtime = match tokio::runtime::Builder::new_multi_thread()
-		.enable_all()
-		.build()
-	{
-		Ok(runtime) => runtime,
-		Err(error) => {
-			eprintln!("非同期ランタイムを作れません: {error}");
-			return ExitCode::FAILURE;
-		}
+	let Some(result) = block_on_app(app::run(AppPaths::standard())) else {
+		return ExitCode::FAILURE;
 	};
-	let result = runtime.block_on(app::run(AppPaths::standard()));
-	runtime.shutdown_timeout(RUNTIME_SHUTDOWN_GRACE);
 	match result {
 		Ok(()) => ExitCode::SUCCESS,
 		Err(error) => {
@@ -169,6 +155,30 @@ fn run() -> ExitCode {
 	}
 }
 
+/// Tokio のランタイムを作って `future` を最後まで動かし、ランタイムを閉じてからログの guard を破棄する。
+///
+/// - ランタイムを作れないときは標準エラーへ書く (ログの初期化の前のため)
+///
+/// # 引数
+/// - `future`: `app::run` か `app::update_worker`
+///
+/// # 戻り値
+/// 実行の結果。ランタイムを作れなかったときは None
+///
+/// # 例
+/// `let Some(result) = block_on_app(app::run(AppPaths::standard())) else { return ExitCode::FAILURE };`
+fn block_on_app<T>(future: impl Future<Output = Finished<T>>) -> Option<anyhow::Result<T>> {
+	let runtime = match app::build_runtime() {
+		Ok(runtime) => runtime,
+		Err(error) => {
+			eprintln!("非同期ランタイムを作れません: {error}");
+			return None;
+		}
+	};
+	let finished = runtime.block_on(future);
+	Some(app::shutdown_runtime(runtime, finished))
+}
+
 /// `update-worker`: ワーカーの環境を作り、結果を標準出力へ書く。
 ///
 /// # 戻り値
@@ -177,18 +187,9 @@ fn run() -> ExitCode {
 /// # 例
 /// `let code = update_worker();`
 fn update_worker() -> ExitCode {
-	let runtime = match tokio::runtime::Builder::new_multi_thread()
-		.enable_all()
-		.build()
-	{
-		Ok(runtime) => runtime,
-		Err(error) => {
-			eprintln!("非同期ランタイムを作れません: {error}");
-			return ExitCode::FAILURE;
-		}
+	let Some(result) = block_on_app(app::update_worker(AppPaths::standard())) else {
+		return ExitCode::FAILURE;
 	};
-	let result = runtime.block_on(app::update_worker(AppPaths::standard()));
-	runtime.shutdown_timeout(RUNTIME_SHUTDOWN_GRACE);
 	match result {
 		Ok(outcome) => {
 			println!("{}", app::describe_outcome(&outcome));
@@ -208,7 +209,7 @@ fn update_worker() -> ExitCode {
 
 /// `stop`: 動いている Bot に停止の命令を送り、止まるまで待つ。
 ///
-/// - 待つ上限は `shutdown.timeout_secs` + `STOP_WAIT_MARGIN_SECS`
+/// - 待つ上限は `service::stop_wait_hint(shutdown.timeout_secs)` (サービスの停止の待ちの目安と同じ)
 /// - 動いていなかったときも 0 を返す (スクリプトから何度呼んでもよいように)
 ///
 /// # 戻り値
@@ -217,7 +218,7 @@ fn update_worker() -> ExitCode {
 /// # 例
 /// `let code = stop();`
 fn stop() -> ExitCode {
-	let wait = Duration::from_secs(shutdown_timeout_secs() + STOP_WAIT_MARGIN_SECS);
+	let wait = service::stop_wait_hint(shutdown_timeout_secs());
 	match request_stop(STOP_EVENT_NAME, MUTEX_NAME, wait) {
 		Ok(StopOutcome::Stopped) => {
 			println!("{STOP_DONE}");

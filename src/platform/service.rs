@@ -56,6 +56,8 @@ pub const SERVICE_EXIT_FAILED: u32 = 1;
 /// 初期化前の失敗を残すファイル名 (作業ディレクトリ直下)。
 const ERROR_LOG_FILE: &str = "service-error.log";
 /// 停止の待ち時間の目安に足す余裕 (秒)。終了処理の上限の後のランタイムの片付けなどに充てる。
+/// `watapachi-bot stop` の待ちの上限にも使う。再起動の前のスクリプトは、予告の 60 秒のうち 30 秒の時点で
+/// 送るため、上限 20 秒と合わせて 60 秒に収まる値にする
 const STOP_WAIT_MARGIN_SECS: u64 = 5;
 /// 回復の設定: 1 回目、2 回目、3 回目以降の再起動までの待ち (秒)。
 const RESTART_DELAYS_SECS: [u64; 3] = [10, 60, 300];
@@ -65,8 +67,6 @@ const FAILURE_RESET_SECS: u64 = 86_400;
 const START_WAIT_HINT: Duration = Duration::from_secs(30);
 /// 停止の完了を調べる間隔。
 const STOP_POLL_INTERVAL: Duration = Duration::from_millis(500);
-/// `app::run_with` の後、ランタイムに残った処理を待つ上限。
-const RUNTIME_SHUTDOWN_GRACE: Duration = Duration::from_secs(1);
 /// 付与する権利の名前 (`SE_SERVICE_LOGON_NAME`)。
 const LSA_RIGHT_SERVICE_LOGON: &str = "SeServiceLogonRight";
 
@@ -218,7 +218,7 @@ pub fn failure_actions() -> ServiceFailureActions {
 	}
 }
 
-/// 停止中の報告に付ける待ち時間の目安を求める。
+/// 停止中の報告に付ける待ち時間の目安を求める。`watapachi-bot stop` の待ちの上限にも使う。
 ///
 /// # 引数
 /// - `shutdown_timeout_secs`: `shutdown.timeout_secs`
@@ -610,10 +610,8 @@ fn prepare_and_run(
 		.map_err(|error| format!("設定を読めません ({}): {error}", paths.config.display()))?;
 	let hint = stop_wait_hint(config.shutdown.timeout_secs);
 
-	let runtime = tokio::runtime::Builder::new_multi_thread()
-		.enable_all()
-		.build()
-		.map_err(|error| format!("非同期ランタイムを作れません: {error}"))?;
+	let runtime =
+		app::build_runtime().map_err(|error| format!("非同期ランタイムを作れません: {error}"))?;
 
 	let accepted = ServiceControlAccept::STOP | ServiceControlAccept::PRESHUTDOWN;
 	report(
@@ -625,7 +623,7 @@ fn prepare_and_run(
 
 	// 停止の合図を受けたら、終了処理の間は StopPending と待ち時間の目安を報告する
 	let mut stop_watch = stop.clone();
-	let result = runtime.block_on(async {
+	let finished = runtime.block_on(async {
 		let reporter = async {
 			if stop_watch.wait_for(|stopped| *stopped).await.is_ok() {
 				report(
@@ -638,12 +636,12 @@ fn prepare_and_run(
 			std::future::pending::<std::convert::Infallible>().await
 		};
 		tokio::select! {
-			result = app::run_with(paths, RunMode::Service { stop }) => result,
+			finished = app::run_with(paths, RunMode::Service { stop }) => finished,
 			never = reporter => match never {},
 		}
 	});
-	runtime.shutdown_timeout(RUNTIME_SHUTDOWN_GRACE);
-	result.map_err(|error| format!("{error:#}"))
+	// ランタイムを閉じてからログの guard を破棄する
+	app::shutdown_runtime(runtime, finished).map_err(|error| format!("{error:#}"))
 }
 
 /// `<dir>/service-error.log` に日時付きで 1 行追記する。dir が無ければ実行ファイルのディレクトリ。

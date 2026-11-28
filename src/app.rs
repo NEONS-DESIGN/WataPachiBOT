@@ -17,11 +17,21 @@
 //! - 窓を閉じたときは Windows が約 5 秒で強制終了するため、全体の期限を `CONSOLE_CLOSE_BUDGET` に縮める
 //! - トークンはログにもエラーの文言にも出さない
 //! - 相対パスはカレントディレクトリ基準 (実行ファイルの場所ではない)
+//! - ログの guard は実行の結果と一緒に返し、ランタイムを閉じた後に破棄する (`shutdown_runtime`)
+//! - 子のモジュール: `.env` の読み取り (`env_file`)、ワーカーの起動指定と切り替え (`worker_launch`)、
+//!   `update-worker` と更新役 (`update_cli`)、ランタイムの作成と片付け (`runtime`)
 //!
 //! 呼び出し方:
 //! ```ignore
-//! runtime.block_on(app::run(AppPaths::standard()))?;
+//! let runtime = app::build_runtime()?;
+//! let finished = runtime.block_on(app::run(AppPaths::standard()));
+//! app::shutdown_runtime(runtime, finished)?;
 //! ```
+
+mod env_file;
+mod runtime;
+mod update_cli;
+mod worker_launch;
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -29,7 +39,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{anyhow, bail, Context as _};
+use anyhow::{anyhow, Context as _};
 use arc_swap::ArcSwap;
 use songbird::shards::TwilightMap;
 use songbird::Songbird;
@@ -53,36 +63,27 @@ use crate::gateway::voice_access::DiscordVoiceAccess;
 use crate::guild::notifier::Notifier;
 use crate::guild::registry::{ActorDeps, GuildRegistry};
 use crate::lang::GuildLangs;
-use crate::logging;
+use crate::logging::{self, LogGuard};
 use crate::messages::MessageCatalog;
 use crate::platform::job::Job;
 use crate::platform::single_instance::{SingleInstance, SingleInstanceError, MUTEX_NAME};
 use crate::platform::stop_request::{StopListener, STOP_EVENT_NAME};
 use crate::resolver::cached::{CachedResolver, HttpStreamLength};
-use crate::resolver::pool::RollingRestartError;
 use crate::resolver::pool::{WorkerClient, WorkerPool};
-use crate::resolver::process::WorkerSpec;
 use crate::resolver::Resolver;
 use crate::scheduler::{self, SchedulerDeps};
-use crate::update::envs::{select_python, EnvStore, FallbackReason, PythonSource};
-use crate::update::procedure::{UpdateOutcome, Updater, WorkerSwitch};
-use crate::update::tools::UvTools;
 
-/// `.env` でトークンを置くキー。
-const TOKEN_KEY: &str = "DISCORD_TOKEN";
-/// `.env` のコメント行の先頭。
-const ENV_COMMENT: char = '#';
-/// UTF-8 の BOM。メモ帳で保存した `.env` の先頭に付くことがある。
-const BOM: char = '\u{feff}';
+pub use env_file::{parse_env_value, read_token};
+pub use runtime::{build_runtime, shutdown_runtime, Finished};
+pub use update_cli::{describe_outcome, update_worker, UPDATE_WORKER_BOT_RUNNING};
+pub use worker_launch::{worker_spec, LiveSwitch};
+
+use update_cli::build_updater;
+use worker_launch::{check_worker_files, choose_python};
+
 /// 現在のユーザー (Bot 自身) の取得を待つ上限。twilight-http の 1 要求の既定の上限 (10 秒) より長く取り、
 /// HTTP クライアント側の失敗を先に受け取る。
 const CURRENT_USER_TIMEOUT: Duration = Duration::from_secs(15);
-
-/// ワーカーへの引数の名前。worker.py の argparse と揃える。
-const ARG_CACHEDIR: &str = "--cachedir";
-const ARG_PREMIUM: &str = "--premium";
-const ARG_COOKIES: &str = "--cookies";
-const ARG_USER_AGENT: &str = "--user-agent";
 
 /// 終了でアクターの段が使い切らずに DB の段へ残す時間。全体が短いときは半分までに縮める。
 /// DbWriter に積んだ書き込み (終了時の位置の保存を含む) を書き出して閉じる時間に充てる。
@@ -187,12 +188,15 @@ enum StopReason {
 /// # 引数
 /// - `paths`: 設定、メッセージ、`.env` の場所
 ///
+/// # 戻り値
+/// `run_with` と同じ
+///
 /// # エラー
 /// `run_with` と同じ
 ///
 /// # 例
-/// `app::run(AppPaths::standard()).await?;`
-pub async fn run(paths: AppPaths) -> anyhow::Result<()> {
+/// `let finished = runtime.block_on(app::run(AppPaths::standard()));`
+pub async fn run(paths: AppPaths) -> Finished<()> {
 	run_with(paths, RunMode::Console).await
 }
 
@@ -200,35 +204,56 @@ pub async fn run(paths: AppPaths) -> anyhow::Result<()> {
 ///
 /// - `.env`、設定、メッセージのどれかが不正なら、ログ・ミューテックス・ワーカーを作る前に止まる
 /// - Shard が再接続しない形で終わったときも終了順で止め、エラーを返す
+/// - ログの guard は結果と一緒に返す。ランタイムを閉じるまで残すため、`shutdown_runtime` に渡すこと
 ///
 /// # 引数
 /// - `paths`: 設定、メッセージ、`.env` の場所
 /// - `mode`: コンソールかサービスか。終了の合図の待ち方が変わる
 ///
 /// # 戻り値
-/// Ctrl+C かサービスの停止で終えたら `Ok(())`
+/// 実行の結果とログの guard。Ctrl+C かサービスの停止で終えたら結果は `Ok(())`
 ///
 /// # エラー
+/// (`Finished::result` の Err)
 /// - トークンが無い、設定かメッセージが不正、ログを初期化できない、既に起動している、
 ///   Job か DB を作れない、Discord の利用者情報を得られない
 /// - Shard が再接続しない形で終わった (トークンの誤り、許されていない Intent など)
 ///
 /// # 例
 /// ```ignore
-/// app::run_with(AppPaths::standard(), RunMode::Console).await?;
+/// let finished = runtime.block_on(app::run_with(AppPaths::standard(), RunMode::Console));
 /// ```
-pub async fn run_with(paths: AppPaths, mode: RunMode) -> anyhow::Result<()> {
+pub async fn run_with(paths: AppPaths, mode: RunMode) -> Finished<()> {
+	let mut log_guard = None;
+	let result = start_and_run(paths, mode, &mut log_guard).await;
+	Finished { result, log_guard }
+}
+
+/// `run_with` の本体。ログを初期化したら guard を `log_guard` に置く。
+///
+/// # 引数
+/// - `paths`: 設定、メッセージ、`.env` の場所
+/// - `mode`: 終了の合図の待ち方
+/// - `log_guard`: ログの guard の置き場所。ログの初期化の前に失敗したら None のまま
+///
+/// # エラー
+/// `run_with` と同じ
+///
+/// # 例
+/// `let result = start_and_run(paths, mode, &mut log_guard).await;`
+async fn start_and_run(
+	paths: AppPaths,
+	mode: RunMode,
+	log_guard: &mut Option<LogGuard>,
+) -> anyhow::Result<()> {
 	install_crypto_provider();
 
 	let token = read_token(&paths.env)?;
-	let config = Config::load(&paths.config)
-		.with_context(|| format!("設定を読めません: {}", paths.config.display()))?;
+	let config = load_config(&paths.config)?;
 	let catalog = MessageCatalog::load(&paths.messages)
 		.with_context(|| format!("メッセージを読めません: {}", paths.messages.display()))?;
 
-	let _log_guard = logging::init(&config.bot, &config.paths.logs)
-		.with_context(|| format!("ログを初期化できません: {}", config.paths.logs.display()))?;
-	logging::install_panic_hook();
+	*log_guard = Some(init_logging(&config)?);
 	tracing::info!(version = env!("CARGO_PKG_VERSION"), "起動します");
 
 	let result = run_logged(token, Arc::new(config), Arc::new(catalog), mode).await;
@@ -258,13 +283,8 @@ async fn run_logged(
 	catalog: Arc<MessageCatalog>,
 	mut mode: RunMode,
 ) -> anyhow::Result<()> {
-	let _instance = SingleInstance::acquire(MUTEX_NAME).map_err(|error| match error {
-		// 型のまま渡す。main が二重起動を見分けて専用の終了コードを返すため
-		SingleInstanceError::AlreadyRunning => {
-			anyhow::Error::new(SingleInstanceError::AlreadyRunning)
-		}
-		other => anyhow!(other).context("二重起動の確認に失敗しました"),
-	})?;
+	// 型のまま渡す。main が二重起動を見分けて専用の終了コードを返すため
+	let _instance = acquire_instance(|| anyhow::Error::new(SingleInstanceError::AlreadyRunning))?;
 	// 二重起動の防止の後に作る (`stop` はミューテックスの有無で Bot の終わりを知るため)
 	let mut stop_request = match StopListener::create(STOP_EVENT_NAME) {
 		Ok(listener) => Some(listener),
@@ -873,99 +893,6 @@ async fn close_database(database: Database) {
 	}
 }
 
-/// 起動中の Bot の切り替え。ワーカーのプールと、`InputFactory` と共有する `PipeSpec` を持つ。
-///
-/// - 更新の手順 (`Updater::run`) の `WorkerSwitch` として使う
-/// - `pipe` は起動時に作った `Arc<ArcSwap<PipeSpec>>` と同じものを渡す
-///
-/// # 例
-/// `let live = LiveSwitch { pool, template: worker_spec(&config, &python), pipe };`
-pub struct LiveSwitch {
-	/// ワーカーのプール
-	pub pool: Arc<WorkerPool>,
-	/// 起動指定の雛形。python だけ差し替える
-	pub template: WorkerSpec,
-	/// PipeInput の起動方法 (`InputFactory` と共有)
-	pub pipe: Arc<ArcSwap<PipeSpec>>,
-}
-
-#[async_trait::async_trait]
-impl WorkerSwitch for LiveSwitch {
-	/// ワーカーを入れ替える。
-	///
-	/// - `Some` なら雛形の python を差し替えた起動指定で `rolling_restart` し、成功したら `pipe` の python も差し替える
-	/// - `None` なら同じ環境で入れ替える (`pipe` は変えない)
-	///
-	/// # 引数
-	/// - `python`: 新しい環境の python.exe
-	///
-	/// # エラー
-	/// `WorkerPool::rolling_restart` の失敗。失敗時は `pipe` を変えない
-	async fn switch(&self, python: Option<PathBuf>) -> Result<(), RollingRestartError> {
-		let spec = python.as_ref().map(|python| WorkerSpec {
-			python: python.clone(),
-			..self.template.clone()
-		});
-		self.pool.rolling_restart(spec).await?;
-		if let Some(python) = python {
-			let mut next = PipeSpec::clone(&self.pipe.load());
-			next.python = python;
-			self.pipe.store(Arc::new(next));
-		}
-		Ok(())
-	}
-}
-
-/// `update-worker` で Bot が動いていたときの文言。
-pub const UPDATE_WORKER_BOT_RUNNING: &str = "Bot の起動中は使えません。止めてから実行してください";
-/// 更新の結果の表示: 更新した。
-const OUTCOME_UPDATED: &str = "更新しました: yt-dlp";
-/// 更新の結果の表示: 同じ版だった。
-const OUTCOME_UNCHANGED: &str = "更新はありません: yt-dlp";
-/// 更新の結果の表示: 失敗した。
-const OUTCOME_FAILED: &str = "失敗しました";
-/// 更新の結果の表示: 途中で終了した。
-const OUTCOME_STOPPED: &str = "途中で終了しました。現在の環境は変わっていません";
-
-/// Bot を止めている間にワーカーの環境を作る (`watapachi-bot update-worker`)。
-///
-/// - 設定を読み、ログを初期化し、二重起動の防止の mutex を取る (Bot の起動中は取れず Err)
-/// - 入れ替え先なしで `Updater::run` を実行する (検査まで成功したら `current.json` を書く)
-/// - 最初の環境を作る用途にも使う
-///
-/// # 引数
-/// - `paths`: 設定とメッセージの場所
-///
-/// # 戻り値
-/// 更新の結果。`Failed` と `Stopped` を終了コードに変えるのは呼び出し側
-///
-/// # エラー
-/// 設定の読み込み、ログの初期化、Job の作成の失敗。Bot が起動中のとき
-///
-/// # 例
-/// `let outcome = update_worker(AppPaths::standard()).await?;`
-pub async fn update_worker(paths: AppPaths) -> anyhow::Result<UpdateOutcome> {
-	install_crypto_provider();
-
-	let config = Config::load(&paths.config)
-		.with_context(|| format!("設定を読めません: {}", paths.config.display()))?;
-	let _log_guard = logging::init(&config.bot, &config.paths.logs)
-		.with_context(|| format!("ログを初期化できません: {}", config.paths.logs.display()))?;
-	logging::install_panic_hook();
-
-	let _instance = SingleInstance::acquire(MUTEX_NAME).map_err(|error| match error {
-		SingleInstanceError::AlreadyRunning => anyhow!(UPDATE_WORKER_BOT_RUNNING),
-		other => anyhow!(other).context("二重起動の確認に失敗しました"),
-	})?;
-	let job = Arc::new(Job::new().context("Job Object を作れません")?);
-
-	let template = worker_spec(&config, &config.paths.worker_python);
-	let updater = build_updater(&config, template, job);
-	let outcome = updater.run(None, jiff::ZonedDateTime::now()).await;
-	tracing::info!(?outcome, "update-worker を終えました");
-	Ok(outcome)
-}
-
 /// rustls の暗号プロバイダを ring に決める。Discord や YouTube への通信の前に呼ぶ。
 ///
 /// - 失敗は既に入っている (別の箇所が先に入れた) 場合だけのため無視する
@@ -976,170 +903,68 @@ fn install_crypto_provider() {
 	let _ = rustls::crypto::ring::default_provider().install_default();
 }
 
-/// ワーカーの環境の更新役を作る。常駐の Scheduler と `update-worker` で同じ組み立てを使う。
+/// 設定ファイルを読んで検証する。失敗の文言に場所を添える。
 ///
 /// # 引数
-/// - `config`: 設定全体 (環境の置き場所、残す Python、毎日の入れ替えの有無)
-/// - `template`: 検査用のワーカーの起動の雛形
-/// - `job`: 起動する子プロセスを入れる Job Object
+/// - `path`: config.toml のパス
 ///
 /// # 戻り値
-/// 更新役
-///
-/// # 例
-/// `let updater = build_updater(&config, worker_spec(&config, python), job);`
-fn build_updater(config: &Config, template: WorkerSpec, job: Arc<Job>) -> Updater {
-	let tools = UvTools::from_config(config, template, job);
-	Updater::new(
-		EnvStore::new(&config.paths.worker_envs).keep_python(&config.paths.worker_python),
-		Arc::new(tools),
-		config.update.recycle_workers_daily,
-	)
-}
-
-/// `UpdateOutcome` を運用者向けの 1 行にする (純粋)。
-///
-/// # 引数
-/// - `outcome`: 更新の結果
-///
-/// # 戻り値
-/// 版や失敗の段と理由を含む 1 行
-///
-/// # 例
-/// `println!("{}", describe_outcome(&outcome));`
-pub fn describe_outcome(outcome: &UpdateOutcome) -> String {
-	match outcome {
-		UpdateOutcome::Updated { version } => format!("{OUTCOME_UPDATED} {version}"),
-		UpdateOutcome::Unchanged { version, .. } => format!("{OUTCOME_UNCHANGED} {version}"),
-		UpdateOutcome::Failed { stage, message } => {
-			format!("{OUTCOME_FAILED} ({}): {message}", stage.label())
-		}
-		UpdateOutcome::Stopped => OUTCOME_STOPPED.to_owned(),
-	}
-}
-
-/// ワーカーの起動指定を作る (純粋)。
-///
-/// - `python` は引数 (起動時に選んだ環境の python.exe)、`script = paths.worker_script`
-/// - 引数は `--cachedir <paths.ytdlp_cache> --premium <worker.youtube_premium>` に、
-///   `worker.cookies_browser` が空でなければ `--cookies <cookies_browser>`、
-///   `worker.user_agent` が空でなければ `--user-agent <user_agent>` を足す
-/// - `--request-budget-secs` は `WorkerPool` が足すため含めない
-///
-/// # 引数
-/// - `config`: 設定
-/// - `python`: ワーカーを起動する python.exe
-///
-/// # 戻り値
-/// ワーカーの起動指定
-///
-/// # 例
-/// `let pool = WorkerPool::start(worker_spec(&config, &python), &config.worker, job);`
-pub fn worker_spec(config: &Config, python: &Path) -> WorkerSpec {
-	let worker = &config.worker;
-	let mut args = vec![
-		ARG_CACHEDIR.to_owned(),
-		config.paths.ytdlp_cache.to_string_lossy().into_owned(),
-		ARG_PREMIUM.to_owned(),
-		worker.youtube_premium.clone(),
-	];
-	if !worker.cookies_browser.is_empty() {
-		args.push(ARG_COOKIES.to_owned());
-		args.push(worker.cookies_browser.clone());
-	}
-	if !worker.user_agent.is_empty() {
-		args.push(ARG_USER_AGENT.to_owned());
-		args.push(worker.user_agent.clone());
-	}
-	WorkerSpec {
-		python: python.to_path_buf(),
-		script: config.paths.worker_script.clone(),
-		args,
-	}
-}
-
-/// `.env` の本文から 1 つのキーの値を取り出す (純粋)。
-///
-/// - 1 行 1 組の `KEY=VALUE`。`#` で始まる行と空行は飛ばす。先頭の BOM と行末の CR は無視する
-/// - キーと値の前後の空白を除き、値が同じ引用符 (`"` か `'`) で囲まれていれば外す
-/// - 同じキーが複数あれば後の行を使う
-///
-/// # 引数
-/// - `text`: `.env` の本文
-/// - `key`: 探すキー
-///
-/// # 戻り値
-/// 値。キーが無ければ None (空の値は `Some("")`)
-///
-/// # 例
-/// `assert_eq!(parse_env_value("A=1\n", "A").as_deref(), Some("1"));`
-pub fn parse_env_value(text: &str, key: &str) -> Option<String> {
-	let text = text.strip_prefix(BOM).unwrap_or(text);
-	let mut found = None;
-	for line in text.lines() {
-		let line = line.trim();
-		if line.is_empty() || line.starts_with(ENV_COMMENT) {
-			continue;
-		}
-		let Some((name, value)) = line.split_once('=') else {
-			continue;
-		};
-		if name.trim() != key {
-			continue;
-		}
-		found = Some(unquote(value.trim()).to_owned());
-	}
-	found
-}
-
-/// 値を囲む同じ引用符を 1 組外す。
-///
-/// # 引数
-/// - `value`: 前後の空白を除いた値
-///
-/// # 戻り値
-/// 引用符を外した値。囲まれていなければそのまま
-///
-/// # 例
-/// `assert_eq!(unquote("\"a\""), "a");`
-fn unquote(value: &str) -> &str {
-	for quote in ['"', '\''] {
-		if let Some(inner) = value
-			.strip_prefix(quote)
-			.and_then(|rest| rest.strip_suffix(quote))
-		{
-			return inner;
-		}
-	}
-	value
-}
-
-/// `.env` から `DISCORD_TOKEN` を読む。
-///
-/// - エラーの文言にトークンや他の値を含めない
-///
-/// # 引数
-/// - `path`: `.env` のパス
-///
-/// # 戻り値
-/// 空でないトークン
+/// 検証済みの設定
 ///
 /// # エラー
-/// ファイルを読めない、`DISCORD_TOKEN` が無いか空
+/// 読めない、TOML として解釈できない、値が不正
 ///
 /// # 例
-/// `let token = read_token(Path::new(".env"))?;`
-pub fn read_token(path: &Path) -> anyhow::Result<String> {
-	let text = std::fs::read_to_string(path).with_context(|| {
-		format!(
-			"{} を読めません。{TOKEN_KEY} を書いた .env を置いてください (.env.example を写して作る)",
-			path.display()
-		)
-	})?;
-	match parse_env_value(&text, TOKEN_KEY) {
-		Some(token) if !token.is_empty() => Ok(token),
-		_ => bail!("{} に {TOKEN_KEY} がありません", path.display()),
-	}
+/// `let config = load_config(&paths.config)?;`
+fn load_config(path: &Path) -> anyhow::Result<Config> {
+	Config::load(path).with_context(|| format!("設定を読めません: {}", path.display()))
+}
+
+/// ログを初期化し、panic をログへ出すフックを入れる。
+///
+/// - 返した guard はランタイムを閉じるまで残すこと (`shutdown_runtime` で破棄する)
+///
+/// # 引数
+/// - `config`: 設定 (水準、保持数、ログのディレクトリ)
+///
+/// # 戻り値
+/// ログの guard
+///
+/// # エラー
+/// ログを初期化できない (ファイルを作れない、水準が不正、既に初期化済み)
+///
+/// # 例
+/// `*log_guard = Some(init_logging(&config)?);`
+fn init_logging(config: &Config) -> anyhow::Result<LogGuard> {
+	let guard = logging::init(&config.bot, &config.paths.logs)
+		.with_context(|| format!("ログを初期化できません: {}", config.paths.logs.display()))?;
+	logging::install_panic_hook();
+	Ok(guard)
+}
+
+/// 二重起動の防止の mutex を取る。
+///
+/// - 既に起動していたときのエラーは `already_running` で作る (呼び出し側で文言や型を変えるため)
+/// - それ以外の失敗は「二重起動の確認に失敗しました」を添えて返す
+///
+/// # 引数
+/// - `already_running`: 既に起動していたときに返すエラーを作る
+///
+/// # 戻り値
+/// 保持し続ける `SingleInstance`。破棄で mutex を手放す
+///
+/// # エラー
+/// 既に起動している、mutex を作れない
+///
+/// # 例
+/// `let _instance = acquire_instance(|| anyhow!(UPDATE_WORKER_BOT_RUNNING))?;`
+fn acquire_instance(
+	already_running: impl FnOnce() -> anyhow::Error,
+) -> anyhow::Result<SingleInstance> {
+	SingleInstance::acquire(MUTEX_NAME).map_err(|error| match error {
+		SingleInstanceError::AlreadyRunning => already_running(),
+		other => anyhow!(other).context("二重起動の確認に失敗しました"),
+	})
 }
 
 /// ファイルの親ディレクトリが無ければ作る。
@@ -1160,92 +985,4 @@ fn ensure_parent_dir(path: &Path) -> anyhow::Result<()> {
 		}
 	}
 	Ok(())
-}
-
-/// 起動時の python の出どころ (ログの文言): current.json の環境。
-const PYTHON_ORIGIN_CURRENT: &str = "current.json の環境の python";
-/// 起動時の python の出どころ (ログの文言): current.json の previous の環境。
-const PYTHON_ORIGIN_PREVIOUS: &str = "直前の環境 (current.json の previous) の python";
-/// 起動時の python の出どころ (ログの文言): 設定。
-const PYTHON_ORIGIN_CONFIG: &str = "paths.worker_python";
-
-/// ワーカーと PipeInput が使う python を選び、結果をログに残す。
-///
-/// - `paths.worker_envs` の `current.json` が指す python があればそれを使う
-/// - 無ければ直前の環境 (`previous`) の python を、警告を出して使う
-/// - 記録なし、壊れている、どちらの python も無いときは警告と理由を出し、`paths.worker_python` を使う
-///
-/// # 引数
-/// - `config`: 設定
-///
-/// # 戻り値
-/// (使う python.exe, その出どころの説明 (`PYTHON_ORIGIN_*`))
-///
-/// # 例
-/// `let (python, origin) = choose_python(&config);`
-fn choose_python(config: &Config) -> (PathBuf, &'static str) {
-	let store = EnvStore::new(&config.paths.worker_envs);
-	let (python, source) = select_python(&store, &config.paths.worker_python);
-	let origin = match source {
-		PythonSource::Current(name) => {
-			tracing::info!(env = %name, python = %python.display(), "更新済みの環境の python を使います");
-			PYTHON_ORIGIN_CURRENT
-		}
-		PythonSource::Previous { name, current } => {
-			tracing::warn!(
-				env = %name,
-				current = %current,
-				python = %python.display(),
-				"current.json が指す python が無いため、直前の環境の python を使います"
-			);
-			PYTHON_ORIGIN_PREVIOUS
-		}
-		PythonSource::Fallback(reason) => {
-			let reason = match reason {
-				FallbackReason::NoRecord => "current.json がありません",
-				FallbackReason::Corrupt => "current.json が壊れています",
-				FallbackReason::MissingPython => {
-					"current.json が指す python も、直前の環境の python もありません"
-				}
-			};
-			tracing::warn!(
-				reason,
-				python = %python.display(),
-				"paths.worker_python を使います"
-			);
-			PYTHON_ORIGIN_CONFIG
-		}
-	};
-	(python, origin)
-}
-
-/// ワーカーの python とスクリプトの有無を確かめ、無ければエラーのログを残す。
-///
-/// - 起動は止めない (ワーカーの起動の失敗はプールが扱い、解決は Unavailable になる)
-/// - python は yt-dlp (`yt-dlp[default,curl-cffi]`) を入れた venv の python.exe を指すこと。
-///   リポジトリの `worker/.venv` は試験用で yt-dlp を入れていない
-///
-/// # 引数
-/// - `config`: 設定
-/// - `python`: 起動時に選んだ python.exe
-/// - `origin`: `python` の出どころの説明 (`choose_python` の戻り値)
-///
-/// # 例
-/// `check_worker_files(&config, &python, origin);`
-fn check_worker_files(config: &Config, python: &Path, origin: &str) {
-	tracing::info!(
-		python = %python.display(),
-		origin,
-		"ワーカーの python。yt-dlp[default,curl-cffi] を入れた venv の python.exe を指すこと"
-	);
-	if !python.is_file() {
-		tracing::error!(
-			path = %python.display(),
-			"{origin} がありません。yt-dlp[default,curl-cffi] を入れた venv の python.exe を指定してください"
-		);
-	}
-	let script = &config.paths.worker_script;
-	if !script.is_file() {
-		tracing::error!(path = %script.display(), "paths.worker_script がありません");
-	}
 }
