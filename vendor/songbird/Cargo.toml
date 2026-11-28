@@ -52,7 +52,6 @@ default = [
     "driver",
     "gateway",
     "rustls",
-    "serenity",
     "tungstenite",
 ]
 driver = [
@@ -114,7 +113,6 @@ gateway = [
 internals = ["dep:byteorder"]
 native = [
     "reqwest?/native-tls",
-    "serenity?/native_tls_backend",
     "stream_lib?/native-tls",
     "tokio-tungstenite?/native-tls",
     "tokio-websockets?/native-tls",
@@ -127,7 +125,6 @@ receive = [
 ]
 rustls = [
     "reqwest?/rustls-tls",
-    "serenity?/rustls_backend",
     "stream_lib?/rustls-tls",
     "tokio-tungstenite?/rustls-tls-webpki-roots",
     "tokio-websockets?/ring",
@@ -140,6 +137,11 @@ twilight = [
     "dep:twilight-model",
 ]
 tws = ["dep:tokio-websockets"]
+
+# serenity の連携は使わないため依存から外した。ソースに残る cfg(feature = "serenity") の警告を抑える
+[lints.rust.unexpected_cfgs]
+level = "warn"
+check-cfg = ['cfg(feature, values("serenity"))']
 
 [lib]
 name = "songbird"
@@ -259,15 +261,6 @@ optional = true
 
 [dependencies.serde_json]
 version = "1"
-
-[dependencies.serenity]
-version = "0.12.0"
-features = [
-    "voice",
-    "gateway",
-]
-optional = true
-default-features = false
 
 [dependencies.serenity-voice-model]
 version = "0.3"
