@@ -2,6 +2,8 @@
 //!
 //! - 時間の判定は余裕を大きく取る (負荷の高い PC でも通るように)
 
+#[path = "support/http_client.rs"]
+mod http_client;
 #[path = "support/range_server.rs"]
 mod range_server;
 
@@ -118,7 +120,7 @@ fn open(
 	refresher: Arc<FakeRefresher>,
 	config: ChunkConfig,
 ) -> ChunkedStream {
-	ChunkedRequest::new(reqwest::Client::new(), stream, refresher, config).into_stream()
+	ChunkedRequest::new(http_client::new_client(), stream, refresher, config).into_stream()
 }
 
 /// ChunkError を取り出す。
@@ -636,7 +638,7 @@ fn adapter_failure_is_observable_after_read_ends() {
 	let server = runtime.block_on(RangeServer::start(bytes.clone()));
 	let _guard = runtime.enter();
 	let request = ChunkedRequest::new(
-		reqwest::Client::new(),
+		http_client::new_client(),
 		resolved(server.url("/a"), 3000, None),
 		FakeRefresher::new(None),
 		ChunkConfig {
@@ -671,7 +673,7 @@ async fn error_text_does_not_contain_url() {
 	let secret = "SECRETSIG123";
 	let url = format!("http://127.0.0.1:{port}/videoplayback?sig={secret}&ip=192.0.2.1");
 	let request = ChunkedRequest::new(
-		reqwest::Client::new(),
+		http_client::new_client(),
 		resolved(url, 2500, None),
 		FakeRefresher::new(None),
 		ChunkConfig {
@@ -771,7 +773,7 @@ async fn whole_file_answered_with_200_is_accepted() {
 async fn zero_filesize_is_rejected() {
 	let server = RangeServer::start(Vec::new()).await;
 	let mut request = ChunkedRequest::new(
-		reqwest::Client::new(),
+		http_client::new_client(),
 		resolved(server.url("/a"), 0, None),
 		FakeRefresher::new(None),
 		config(1000),
@@ -1168,7 +1170,7 @@ async fn cancel_interrupts_pending_fetch() {
 	let server = RangeServer::start(data(2500)).await;
 	server.set_delay(Duration::from_secs(30));
 	let request = ChunkedRequest::new(
-		reqwest::Client::new(),
+		http_client::new_client(),
 		resolved(server.url("/a"), 2500, None),
 		FakeRefresher::new(None),
 		config(1000),
@@ -1203,7 +1205,7 @@ async fn cancel_interrupts_pending_fetch() {
 async fn cancel_interrupts_available_wait() {
 	let server = RangeServer::start(data(2500)).await;
 	let request = ChunkedRequest::new(
-		reqwest::Client::new(),
+		http_client::new_client(),
 		resolved_available(server.url("/a"), 2500, Some(now() + 30)),
 		FakeRefresher::new(None),
 		config(1000),
@@ -1233,7 +1235,7 @@ async fn read_after_cancel_does_not_fetch() {
 	let bytes = data(3000);
 	let server = RangeServer::start(bytes.clone()).await;
 	let request = ChunkedRequest::new(
-		reqwest::Client::new(),
+		http_client::new_client(),
 		resolved(server.url("/a"), 3000, None),
 		FakeRefresher::new(None),
 		config(1000),

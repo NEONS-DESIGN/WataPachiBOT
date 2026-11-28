@@ -24,7 +24,7 @@ twilight-gateway = "0.18"
 twilight-http = "0.18"
 twilight-cache-inmemory = "0.18"
 twilight-util = { version = "0.18", default-features = false, features = ["builder", "permission-calculator"] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
 # 暗号プロバイダは ring に揃える (起動時に install_default する)。aws-lc-rs を入れないため既定の機能を切る
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 rusqlite = { version = "0.43", features = ["bundled"] }
@@ -73,4 +73,4 @@ codegen-units = 1
 
 # Songbird はフォーク (DAVE 送信統計、シークの修正、serenity の削除などを加えたもの) をコミットで固定して使う
 [patch.crates-io]
-songbird = { git = "https://github.com/NEONS-DESIGN/songbird", rev = "f7c4be002f145efd8543778a78bf6d8b146dba32" }
+songbird = { git = "https://github.com/NEONS-DESIGN/songbird", rev = "55ec0c0a2cfca219d4f2a4c902b9ca98ae394eab" }

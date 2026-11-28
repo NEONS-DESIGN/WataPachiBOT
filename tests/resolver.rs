@@ -2,6 +2,8 @@
 
 #[path = "support/fake_worker_client.rs"]
 mod fake_worker_client;
+#[path = "support/http_client.rs"]
+mod http_client;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -563,7 +565,8 @@ async fn length_send_error_does_not_contain_url() {
 	drop(listener);
 	let secret = "SECRETSIG123";
 	let url = format!("http://127.0.0.1:{port}/videoplayback?sig={secret}&ip=192.0.2.1");
-	let length = HttpStreamLength::new(reqwest::Client::new(), std::time::Duration::from_secs(5));
+	let length =
+		HttpStreamLength::new(http_client::new_client(), std::time::Duration::from_secs(5));
 	let error = length.length(&url, &BTreeMap::new()).await.unwrap_err();
 	assert!(matches!(
 		error,
@@ -587,7 +590,8 @@ async fn length_server_error_does_not_contain_url() {
 	});
 	let secret = "SECRETSIG123";
 	let url = format!("http://{addr}/videoplayback?sig={secret}&ip=192.0.2.1");
-	let length = HttpStreamLength::new(reqwest::Client::new(), std::time::Duration::from_secs(5));
+	let length =
+		HttpStreamLength::new(http_client::new_client(), std::time::Duration::from_secs(5));
 	let error = length.length(&url, &BTreeMap::new()).await.unwrap_err();
 	server.abort();
 	assert!(error.to_string().contains("500"), "想定外のエラー: {error}");

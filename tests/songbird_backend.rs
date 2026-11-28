@@ -5,6 +5,8 @@
 //!   (`ended_event`、`disconnect_kind`、`TrackGate`、`EventSink`) で確かめ、実機の確認は Discord で行う
 //! - `TrackId` の払い出しと InputFactory の組み立ては、接続の無い Call でも確かめられる
 
+#[path = "support/http_client.rs"]
+mod http_client;
 #[path = "support/python.rs"]
 mod python;
 #[path = "support/wav.rs"]
@@ -95,7 +97,7 @@ fn fixture(name: &str) -> String {
 /// 偽 yt-dlp を起動する InputFactory。
 fn factory(watch_url: &str) -> Arc<InputFactory> {
 	Arc::new(InputFactory {
-		client: reqwest::Client::new(),
+		client: http_client::new_client(),
 		refresher: Arc::new(NoRefresh),
 		chunk: chunk_config(),
 		pipe: Arc::new(ArcSwap::from_pointee(PipeSpec {

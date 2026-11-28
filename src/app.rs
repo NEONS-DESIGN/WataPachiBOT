@@ -896,6 +896,8 @@ async fn close_database(database: Database) {
 /// rustls の暗号プロバイダを ring に決める。Discord や YouTube への通信の前に呼ぶ。
 ///
 /// - 失敗は既に入っている (別の箇所が先に入れた) 場合だけのため無視する
+/// - reqwest (Bot と Songbird の両方) は暗号プロバイダを持たない設定のため、
+///   これより前に `reqwest::Client` を作ると panic する
 ///
 /// # 例
 /// `install_crypto_provider();`
