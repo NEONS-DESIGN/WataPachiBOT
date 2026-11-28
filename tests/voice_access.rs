@@ -6,7 +6,8 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use twilight_cache_inmemory::DefaultInMemoryCache;
 use twilight_http::Client;
-use twilight_model::gateway::payload::incoming::GuildCreate;
+use twilight_model::channel::{Channel, ChannelFlags};
+use twilight_model::gateway::payload::incoming::{ChannelUpdate, GuildCreate};
 use twilight_model::guild::{Guild, Permissions};
 
 use watapachi_bot::audio::access::{AccessVerdict, Denial, VoiceAccess, VoicePermission};
@@ -216,6 +217,54 @@ async fn unknown_channel_or_other_guild_is_unknown() {
 		access.check(GuildId::new(2), ChannelId::new(VC)).await,
 		AccessVerdict::Unknown
 	);
+}
+
+/// 隠された (Bot が見られない) ボイスチャンネル `VC` の Channel Update を入れる。
+/// - Discord の形のとおり、名前を伏せ、上書きは @everyone の VIEW_CHANNEL を拒む 1 件だけにする
+fn obfuscate_vc(cache: &DefaultInMemoryCache) {
+	let channel = json!({"id": VC.to_string(), "guild_id": GUILD.to_string(), "type": 2,
+		"name": "___hidden___", "position": 0,
+		"flags": ChannelFlags::CHANNEL_OBFUSCATED.bits(),
+		"permission_overwrites": [{"id": GUILD.to_string(), "type": 0, "allow": "0",
+			"deny": Permissions::VIEW_CHANNEL.bits().to_string()}]});
+	let channel: Channel = serde_json::from_value(channel).unwrap();
+	cache.update(&ChannelUpdate(channel));
+}
+
+/// 隠しの解けた `VC` の Channel Update を入れる。@everyone の閲覧を拒み、`BOT_ROLE` に閲覧を許す。
+fn reveal_vc(cache: &DefaultInMemoryCache) {
+	let view = Permissions::VIEW_CHANNEL.bits().to_string();
+	let channel = json!({"id": VC.to_string(), "guild_id": GUILD.to_string(), "type": 2,
+		"name": "vc", "position": 0, "flags": 0, "user_limit": 0,
+		"permission_overwrites": [
+			{"id": GUILD.to_string(), "type": 0, "allow": "0", "deny": view},
+			{"id": BOT_ROLE.to_string(), "type": 0, "allow": view, "deny": "0"}]});
+	let channel: Channel = serde_json::from_value(channel).unwrap();
+	cache.update(&ChannelUpdate(channel));
+}
+
+/// 隠されたチャンネルは、Bot が見られないことの表れなので、閲覧の不足として断る (確かめずに参加しない)。
+#[tokio::test]
+async fn obfuscated_channel_is_denied_for_view_channel() {
+	let cache = cache_with(&[BOT_ROLE], BOT_ROLE, 0, &[]);
+	obfuscate_vc(&cache);
+	let flags = cache
+		.channel(twilight_model::id::Id::new(VC))
+		.and_then(|channel| channel.flags);
+	assert_eq!(flags, Some(ChannelFlags::CHANNEL_OBFUSCATED));
+	assert_eq!(
+		check(cache).await,
+		AccessVerdict::Denied(Denial::Missing(vec![VoicePermission::ViewChannel]))
+	);
+}
+
+/// 見られるようになって完全な Channel Update が届けば、入れる。
+#[tokio::test]
+async fn revealed_channel_is_allowed_again() {
+	let cache = cache_with(&[BOT_ROLE], BOT_ROLE, 0, &[]);
+	obfuscate_vc(&cache);
+	reveal_vc(&cache);
+	assert_eq!(check(cache).await, AccessVerdict::Allowed);
 }
 
 /// Bot のメンバー情報を固定の役職で返す、Discord の REST の代わりのサーバーを起動する。
