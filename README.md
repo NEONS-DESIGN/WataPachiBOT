@@ -277,4 +277,4 @@ sc start WataPachiBOT
 このプロジェクトは [**MIT ライセンス**](LICENSE) に基づいて公開されています。  
 Copyright © 2026 NEONS-DESIGN
 
-`vendor/songbird` は [Songbird](https://github.com/serenity-rs/songbird) に変更を加えたもので、[ISC ライセンス](vendor/songbird/LICENSE.md) に従います。
+音声に使う [NEONS-DESIGN/songbird](https://github.com/NEONS-DESIGN/songbird) は [Songbird](https://github.com/serenity-rs/songbird) に変更を加えたもので、[ISC ライセンス](https://github.com/NEONS-DESIGN/songbird/blob/watapachi/LICENSE.md) に従います。

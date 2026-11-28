@@ -54,7 +54,7 @@ default-features = false
 features = ["driver", "gateway", "twilight", "rustls", "tungstenite"]
 
 [dependencies.symphonia]
-version = "0.5"
+version = "0.6"
 features = ["aac", "isomp4"]
 
 [dev-dependencies]
@@ -71,6 +71,6 @@ tokio = { version = "1", features = ["test-util"] }
 lto = "fat"
 codegen-units = 1
 
-# Songbird のローカルパッチ (DAVE 送信統計、Seek 時の古い読み取りの破棄)
+# Songbird はフォーク (DAVE 送信統計、シークの修正、serenity の削除などを加えたもの) をコミットで固定して使う
 [patch.crates-io]
-songbird = { path = "vendor/songbird" }
+songbird = { git = "https://github.com/NEONS-DESIGN/songbird", rev = "bff08c3dd6c92cb506213d193b41eb5ea603a173" }

@@ -285,7 +285,7 @@ impl EventHandler for CoreHandler {
 			}
 			EventContext::DriverDisconnect(data) => {
 				let reason = disconnect_kind(data.reason);
-				let channel = data.channel_id.0.get();
+				let channel = data.channel_id.get();
 				let left = is_left_channel(self.sink.voice_channel(), channel);
 				tracing::info!(
 					guild = self.sink.guild().get(),

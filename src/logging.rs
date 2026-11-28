@@ -36,7 +36,7 @@ use tracing_subscriber::{EnvFilter, Registry};
 use crate::config::BotConfig;
 
 /// `RUST_LOG` が無いときに `bot.log_level` の前に置く、依存クレートの水準。
-/// - vendor の songbird は曲のイベントごとに info を出す
+/// - songbird は曲のイベントごとに info を出す
 /// - twilight_http の debug は、インタラクションのトークンを含む経路を出しうる
 ///
 /// `bot.log_level` に同じクレートの指定があれば、後に置く `bot.log_level` の方が勝つ。
