@@ -104,12 +104,15 @@ pub struct PlayRequest {
 	pub paused: bool,
 }
 
-/// 音声接続の健全性。DAVE (E2EE) の状態とフレーム数を持つ。
+/// 音声接続の健全性。DAVE (E2EE) の状態とフレーム数 (接続からの累計) を持つ。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct VoiceHealth {
 	pub dave_version: Option<u16>,
 	pub encrypted_frames: u64,
+	/// 未暗号化で送ったフレーム。DAVE が無効のときだけ増える
 	pub plaintext_frames: u64,
+	/// DAVE が有効なのに暗号化の鍵が無く、送らなかったフレーム (一人の VC、鍵の切り替えの途中)
+	pub withheld_frames: u64,
 }
 
 /// ボイスチャンネルへの接続を作る。

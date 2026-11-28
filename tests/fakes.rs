@@ -210,6 +210,7 @@ async fn fake_audio_health_and_position_can_be_set() {
 		dave_version: None,
 		encrypted_frames: 0,
 		plaintext_frames: 7,
+		withheld_frames: 0,
 	});
 	let third = session.health();
 	assert_eq!(third.dave_version, None);

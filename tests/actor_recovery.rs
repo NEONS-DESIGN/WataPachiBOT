@@ -93,12 +93,13 @@ async fn start_track(env: &Env, id: &VideoId) {
 	env.barrier().await;
 }
 
-/// 送信が無い (暗号化も未暗号化も増えない) 健全性を返すようにする。
+/// 送信が無い (暗号化も未暗号化も送らなかったも増えない) 健全性を返すようにする。
 fn send_no_frames(env: &Env) {
 	env.audio.set_health_step(VoiceHealth {
 		dave_version: Some(1),
 		encrypted_frames: 0,
 		plaintext_frames: 0,
+		withheld_frames: 0,
 	});
 }
 

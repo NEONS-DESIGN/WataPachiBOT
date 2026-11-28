@@ -41,6 +41,7 @@ impl Feed {
 			dave_version,
 			encrypted_frames: 0,
 			plaintext_frames: 0,
+			withheld_frames: 0,
 		};
 		let grace = Duration::from_secs(config.dave_grace_secs);
 		assert_eq!(judge.observe(&total, grace, LISTENERS), Verdict::Grace);
@@ -55,8 +56,14 @@ impl Feed {
 
 	/// 増分を足した標本を判定させる。
 	fn step(&mut self, encrypted: u64, plaintext: u64) -> Verdict {
+		self.step_with_withheld(encrypted, plaintext, 0)
+	}
+
+	/// 送らなかったフレームの増分も足した標本を判定させる。
+	fn step_with_withheld(&mut self, encrypted: u64, plaintext: u64, withheld: u64) -> Verdict {
 		self.total.encrypted_frames += encrypted;
 		self.total.plaintext_frames += plaintext;
+		self.total.withheld_frames += withheld;
 		self.since += self.interval;
 		self.judge.observe(&self.total, self.since, self.listeners)
 	}
@@ -78,6 +85,7 @@ fn within_grace_is_grace() {
 			dave_version: DAVE,
 			encrypted_frames: 0,
 			plaintext_frames: plaintext,
+			withheld_frames: 0,
 		};
 		assert_eq!(judge.observe(&sample, since, LISTENERS), Verdict::Grace);
 		since += interval;
@@ -233,4 +241,65 @@ fn no_frames_detected_without_listeners() {
 		assert_eq!(feed.step(0, 0), Verdict::Healthy);
 	}
 	assert_eq!(feed.step(0, 0), Verdict::Unhealthy(UnhealthyKind::NoFrames));
+}
+
+#[test]
+fn withheld_ignored_without_listeners() {
+	let config = health_config();
+	let mut feed = Feed::after_grace(&config, DAVE);
+	feed.listeners = 0;
+	// 一人の間は鍵が無く、送らなかったフレームだけが増える。送信なしとも見なさない
+	for _ in 0..config.unhealthy_checks * 3 {
+		assert_eq!(feed.step_with_withheld(0, 0, FRAMES), Verdict::Healthy);
+	}
+}
+
+#[test]
+fn withheld_over_tolerance_with_listeners_is_unhealthy() {
+	let config = health_config();
+	let mut feed = Feed::after_grace(&config, DAVE);
+	for _ in 1..config.unhealthy_checks {
+		assert_eq!(feed.step_with_withheld(0, 0, FRAMES), Verdict::Healthy);
+	}
+	assert_eq!(
+		feed.step_with_withheld(0, 0, FRAMES),
+		Verdict::Unhealthy(UnhealthyKind::Withheld)
+	);
+}
+
+#[test]
+fn withheld_within_tolerance_is_healthy() {
+	let config = health_config();
+	let mut feed = Feed::after_grace(&config, DAVE);
+	let within = config.dave_plaintext_tolerance_frames;
+	for _ in 0..config.unhealthy_checks * 2 {
+		assert_eq!(feed.step_with_withheld(FRAMES, 0, within), Verdict::Healthy);
+	}
+}
+
+#[test]
+fn all_three_zero_is_no_frames() {
+	let config = health_config();
+	let mut feed = Feed::after_grace(&config, DAVE);
+	feed.listeners = 0;
+	for _ in 1..config.unhealthy_checks {
+		assert_eq!(feed.step_with_withheld(0, 0, 0), Verdict::Healthy);
+	}
+	assert_eq!(
+		feed.step_with_withheld(0, 0, 0),
+		Verdict::Unhealthy(UnhealthyKind::NoFrames)
+	);
+}
+
+#[test]
+fn withheld_rewind_is_zero_delta() {
+	let config = health_config();
+	let mut feed = Feed::after_grace(&config, DAVE);
+	feed.total.withheld_frames = FRAMES * 10;
+	assert_eq!(feed.step(FRAMES, 0), Verdict::Healthy);
+	// 別の接続の累計 (巻き戻り) は増分 0 として扱い、異常に数えない
+	for _ in 0..config.unhealthy_checks * 2 {
+		feed.total.withheld_frames = 0;
+		assert_eq!(feed.step(FRAMES, 0), Verdict::Healthy);
+	}
 }

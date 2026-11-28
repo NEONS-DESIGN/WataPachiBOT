@@ -88,11 +88,13 @@ impl State {
 			dave_version: Some(HEALTHY_DAVE_VERSION),
 			encrypted_frames: HEALTHY_FRAMES_PER_SAMPLE,
 			plaintext_frames: 0,
+			withheld_frames: 0,
 		});
 		self.health_total = VoiceHealth {
 			dave_version: step.dave_version,
 			encrypted_frames: self.health_total.encrypted_frames + step.encrypted_frames,
 			plaintext_frames: self.health_total.plaintext_frames + step.plaintext_frames,
+			withheld_frames: self.health_total.withheld_frames + step.withheld_frames,
 		};
 		self.health_total.clone()
 	}

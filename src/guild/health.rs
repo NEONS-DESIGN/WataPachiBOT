@@ -5,7 +5,8 @@
 //!   `?move` で移動したときは移動した時刻から数え直す
 //! - `dave_version` が None または 0 のときは DAVE が無効とみなし、未暗号化の確認を飛ばして送信なしだけを判定する。
 //!   実機の試験で確かめるまでの暫定の扱い
-//! - 聴者 (Bot 以外の参加者) が 0 人の間は、正常でも全フレームが未暗号化で送られるため、未暗号化の確認を飛ばして送信なしだけを判定する
+//! - 聴者 (Bot 以外の参加者) が 0 人の間は、正常でも鍵が無く全フレームを送らない (Songbird が捨てて数える) ため、
+//!   未暗号化と送らなかったの確認を飛ばして送信なしだけを判定する
 //! - 呼び出し:
 //!   ```ignore
 //!   let mut judge = HealthJudge::new(&config.health);
@@ -32,9 +33,11 @@ pub enum Verdict {
 /// 異常の種類。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnhealthyKind {
-	/// 未暗号化の送信の増分が許容を超えた (DAVE の準備前の送信)。
+	/// 未暗号化の送信の増分が許容を超えた (DAVE が有効なのに未暗号化で送った)。
 	Plaintext,
-	/// 再生中なのに暗号化も未暗号化も増えない。
+	/// 送らなかったフレームの増分が許容を超えた (聴者がいるのに DAVE の鍵が無い)。
+	Withheld,
+	/// 再生中なのに暗号化も未暗号化も送らなかったも増えない。
 	NoFrames,
 }
 
@@ -46,8 +49,8 @@ pub struct HealthJudge {
 	threshold: u32,
 	/// 前回の標本 (差分の基準)。無ければ次の標本を基準にするだけ。
 	last: Option<VoiceHealth>,
-	/// 未暗号化の増分が許容を超えた回数 (連続)。
-	plaintext_streak: u32,
+	/// 未暗号化か送らなかったの増分が許容を超えた回数 (連続)。どちらも暗号化して届けられていないため、まとめて数える。
+	unprotected_streak: u32,
 	/// 送信が無かった回数 (連続)。
 	silent_streak: u32,
 }
@@ -71,7 +74,7 @@ impl HealthJudge {
 			tolerance: config.dave_plaintext_tolerance_frames,
 			threshold: config.unhealthy_checks.max(1),
 			last: None,
-			plaintext_streak: 0,
+			unprotected_streak: 0,
 			silent_streak: 0,
 		}
 	}
@@ -85,7 +88,7 @@ impl HealthJudge {
 	/// ```
 	pub fn reset(&mut self) {
 		self.last = None;
-		self.plaintext_streak = 0;
+		self.unprotected_streak = 0;
 		self.silent_streak = 0;
 	}
 
@@ -93,9 +96,10 @@ impl HealthJudge {
 	///
 	/// - `since_play` が猶予以内なら `Grace`。標本は基準として覚え、回数は数え直す
 	/// - 基準が無ければ標本を基準にして `Healthy` (差分が取れないため判定しない)
-	/// - DAVE が有効で聴者が 1 人以上なら、未暗号化の増分が許容を超えた回数を数える。
-	///   聴者が 0 人の間は数えず、`plaintext_streak` を 0 に戻す
-	/// - 暗号化と未暗号化の増分がともに 0 なら、送信なしの回数を数える
+	/// - DAVE が有効で聴者が 1 人以上なら、未暗号化か送らなかったの増分が許容を超えた回数を数える
+	///   (種類は未暗号化が超えていれば `Plaintext`、そうでなければ `Withheld`)。
+	///   聴者が 0 人の間は数えず、`unprotected_streak` を 0 に戻す
+	/// - 暗号化・未暗号化・送らなかったの増分がすべて 0 なら、送信なしの回数を数える
 	/// - それ以外 (送信がある) なら両方の回数を数え直す
 	/// - どちらかの回数が `unhealthy_checks` に達したら `Unhealthy`
 	///
@@ -119,7 +123,7 @@ impl HealthJudge {
 	) -> Verdict {
 		let previous = self.last.replace(sample.clone());
 		if since_play <= self.grace {
-			self.plaintext_streak = 0;
+			self.unprotected_streak = 0;
 			self.silent_streak = 0;
 			return Verdict::Grace;
 		}
@@ -133,25 +137,38 @@ impl HealthJudge {
 		let plaintext = sample
 			.plaintext_frames
 			.saturating_sub(previous.plaintext_frames);
+		let withheld = sample
+			.withheld_frames
+			.saturating_sub(previous.withheld_frames);
 		let dave_active = sample.dave_version.is_some_and(|version| version > 0);
-		if !dave_active || listeners == 0 {
-			// 未暗号化は判定しない (聴者がいなければ正常でも全フレームが未暗号化)
-			self.plaintext_streak = 0;
+		let judged = dave_active && listeners > 0;
+		let unprotected = if !judged {
+			None
+		} else if plaintext > self.tolerance {
+			Some(UnhealthyKind::Plaintext)
+		} else if withheld > self.tolerance {
+			Some(UnhealthyKind::Withheld)
+		} else {
+			None
+		};
+		if !judged {
+			// 判定しない (聴者がいなければ正常でも鍵が無く、全フレームを送らない)
+			self.unprotected_streak = 0;
 		}
-		if dave_active && listeners > 0 && plaintext > self.tolerance {
+		if let Some(kind) = unprotected {
 			self.silent_streak = 0;
-			self.plaintext_streak += 1;
-			if self.plaintext_streak >= self.threshold {
-				return Verdict::Unhealthy(UnhealthyKind::Plaintext);
+			self.unprotected_streak += 1;
+			if self.unprotected_streak >= self.threshold {
+				return Verdict::Unhealthy(kind);
 			}
-		} else if encrypted == 0 && plaintext == 0 {
-			self.plaintext_streak = 0;
+		} else if encrypted == 0 && plaintext == 0 && withheld == 0 {
+			self.unprotected_streak = 0;
 			self.silent_streak += 1;
 			if self.silent_streak >= self.threshold {
 				return Verdict::Unhealthy(UnhealthyKind::NoFrames);
 			}
 		} else {
-			self.plaintext_streak = 0;
+			self.unprotected_streak = 0;
 			self.silent_streak = 0;
 		}
 		Verdict::Healthy
