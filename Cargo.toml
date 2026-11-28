@@ -19,11 +19,11 @@ exclude = ["poc"]
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
-twilight-model = "=0.17.1"
-twilight-gateway = "=0.17.1"
-twilight-http = "=0.17.1"
-twilight-cache-inmemory = "=0.17.1"
-twilight-util = { version = "=0.17.0", default-features = false, features = ["builder", "permission-calculator"] }
+twilight-model = "0.18"
+twilight-gateway = "0.18"
+twilight-http = "0.18"
+twilight-cache-inmemory = "0.18"
+twilight-util = { version = "0.18", default-features = false, features = ["builder", "permission-calculator"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 # 暗号プロバイダは ring に揃える (起動時に install_default する)。aws-lc-rs を入れないため既定の機能を切る
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
@@ -73,4 +73,4 @@ codegen-units = 1
 
 # Songbird はフォーク (DAVE 送信統計、シークの修正、serenity の削除などを加えたもの) をコミットで固定して使う
 [patch.crates-io]
-songbird = { git = "https://github.com/NEONS-DESIGN/songbird", rev = "bff08c3dd6c92cb506213d193b41eb5ea603a173" }
+songbird = { git = "https://github.com/NEONS-DESIGN/songbird", rev = "f7c4be002f145efd8543778a78bf6d8b146dba32" }

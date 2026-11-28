@@ -21,9 +21,10 @@ use twilight_gateway::Event;
 use twilight_http::Client;
 use twilight_model::application::interaction::{Interaction, InteractionData, InteractionType};
 use twilight_model::channel::message::component::Component;
+use twilight_model::channel::message::Embed;
 use twilight_model::channel::Message;
 use twilight_model::http::interaction::{InteractionResponse, InteractionResponseType};
-use twilight_util::builder::InteractionResponseDataBuilder;
+use twilight_util::builder::interaction_response::UpdateMessageBuilder;
 
 use super::cache_view::{
 	guild_permission_data, listeners_in_channel, restore_listeners, voice_channel_of,
@@ -177,7 +178,7 @@ impl Dispatcher {
 				let this = Arc::clone(self);
 				tokio::spawn(async move { this.check_ready().await });
 			}
-			Event::MessageCreate(message) => self.on_message(message.0),
+			Event::MessageCreate(message) => self.on_message(message.message),
 			Event::InteractionCreate(interaction) => {
 				// 応答の期限はボタンが押された時刻から数えるため、受信した時点で打ち切りの時刻を決める
 				let pressed = snowflake_unix_ms(interaction.id.get());
@@ -811,7 +812,7 @@ impl Dispatcher {
 				.as_ref()
 				.map(|message| disable_all(&message.components))
 				.unwrap_or_default();
-			update_message(InteractionResponseDataBuilder::new().components(disabled))
+			update_message_components(disabled)
 		} else {
 			let page = self.page(token.kind, interaction.guild_id, token.target, now_secs());
 			// DB の読み取りが混んでいても Discord の応答の期限 (3 秒) を過ぎないよう、上限で打ち切って受け付けだけ返す
@@ -821,11 +822,7 @@ impl Dispatcher {
 					if let Some(target) = target {
 						self.arm_buttons(target, reply.components.clone());
 					}
-					update_message(
-						InteractionResponseDataBuilder::new()
-							.embeds([reply.embed])
-							.components(reply.components),
-					)
+					update_message_page(reply.embed, reply.components)
 				}
 				Ok(Ok(None)) => return,
 				Ok(Err(error)) => {
@@ -1006,21 +1003,68 @@ fn deferred_update() -> InteractionResponse {
 	}
 }
 
-/// メッセージの書き換えの応答を作る。
+/// ボタンだけを書き換える応答を作る。
 ///
 /// # 引数
-/// - `data`: 書き換える内容 (Embed やボタン)
+/// - `components`: 差し替えるボタン (期限切れで灰色にしたものなど)
+///
+/// # 戻り値
+/// `UpdateMessage` の応答。Embed は変えない
+///
+/// # 呼び出し例
+/// ```ignore
+/// let response = update_message_components(disable_all(&message.components));
+/// ```
+fn update_message_components(components: Vec<Component>) -> InteractionResponse {
+	UpdateMessageBuilder::new().components(components).build()
+}
+
+/// Embed とボタンを書き換える応答を作る (ページ送り)。
+///
+/// # 引数
+/// - `embed`: 新しいページの Embed
+/// - `components`: 新しいページのボタン
 ///
 /// # 戻り値
 /// `UpdateMessage` の応答
 ///
 /// # 呼び出し例
 /// ```ignore
-/// let response = update_message(InteractionResponseDataBuilder::new().components(disabled));
+/// let response = update_message_page(reply.embed, reply.components);
 /// ```
-fn update_message(data: InteractionResponseDataBuilder) -> InteractionResponse {
-	InteractionResponse {
-		kind: InteractionResponseType::UpdateMessage,
-		data: Some(data.build()),
+fn update_message_page(embed: Embed, components: Vec<Component>) -> InteractionResponse {
+	UpdateMessageBuilder::new()
+		.embeds([embed])
+		.components(components)
+		.build()
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::ui::pagination::page_buttons;
+	use twilight_util::builder::embed::EmbedBuilder;
+
+	/// ボタンだけを書き換える応答が、UpdateMessage の種類で、渡したボタンをそのまま持つこと。
+	#[test]
+	fn update_message_components_keeps_kind_and_components() {
+		let components = page_buttons(PageKind::Queue, 0, 2, 1_700_000_000);
+		let response = update_message_components(components.clone());
+		assert_eq!(response.kind, InteractionResponseType::UpdateMessage);
+		let data = response.data.expect("UpdateMessage の応答は data を持つ");
+		assert_eq!(data.components, Some(components));
+		assert_eq!(data.embeds, None);
+	}
+
+	/// Embed とボタンを書き換える応答が、UpdateMessage の種類で、両方をそのまま持つこと。
+	#[test]
+	fn update_message_page_keeps_embed_and_components() {
+		let embed = EmbedBuilder::new().title("page").build();
+		let components = page_buttons(PageKind::History, 1, 3, 1_700_000_000);
+		let response = update_message_page(embed.clone(), components.clone());
+		assert_eq!(response.kind, InteractionResponseType::UpdateMessage);
+		let data = response.data.expect("UpdateMessage の応答は data を持つ");
+		assert_eq!(data.embeds, Some(vec![embed]));
+		assert_eq!(data.components, Some(components));
 	}
 }
