@@ -4,7 +4,7 @@
 
 <p align="center">
   <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-v1.100.1-CE422B" alt="Rust"></a>
-  <a href="https://github.com/twilight-rs/twilight"><img src="https://img.shields.io/badge/Twilight-v0.17-6f42c1" alt="Twilight"></a>
+  <a href="https://github.com/twilight-rs/twilight"><img src="https://img.shields.io/badge/Twilight-v0.18-6f42c1" alt="Twilight"></a>
   <a href="https://github.com/serenity-rs/songbird"><img src="https://img.shields.io/badge/Songbird-v0.6-3498db" alt="Songbird"></a>
   <a href="https://github.com/yt-dlp/yt-dlp"><img src="https://img.shields.io/badge/yt--dlp-latest-FF0000" alt="yt-dlp"></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-v3.14-ffde57" alt="Python"></a>
