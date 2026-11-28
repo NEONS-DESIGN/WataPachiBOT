@@ -136,6 +136,15 @@ impl FakeResolver {
 		}
 	}
 
+	/// 保留している `resolve` のうち、まだ待っている (呼び出し側が捨てていない) ものの数。
+	pub fn waiting(&self, video_id: &VideoId) -> usize {
+		self.state
+			.lock()
+			.ok()
+			.and_then(|s| s.holds.get(video_id).map(watch::Sender::receiver_count))
+			.unwrap_or(0)
+	}
+
 	/// 保留を解く。待っていた `resolve` は指定済みの結果を返す。
 	pub fn release(&self, video_id: &VideoId) {
 		if let Ok(mut s) = self.state.lock() {

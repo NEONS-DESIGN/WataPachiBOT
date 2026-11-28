@@ -1,4 +1,4 @@
-//! 参加の前の権限の判定 (純粋な関数) の試験。
+//! 参加の前の権限の判定 (純粋な関数) と、キャッシュと REST による確認役の試験。
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -215,5 +215,66 @@ async fn unknown_channel_or_other_guild_is_unknown() {
 	assert_eq!(
 		access.check(GuildId::new(2), ChannelId::new(VC)).await,
 		AccessVerdict::Unknown
+	);
+}
+
+/// Bot のメンバー情報を固定の役職で返す、Discord の REST の代わりのサーバーを起動する。
+///
+/// # 戻り値
+/// 待ち受けの番地 (`127.0.0.1:<port>`) と、受けた要求のパスの記録
+async fn start_member_server(roles: &[u64]) -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
+	let member = json!({
+		"user": {"id": BOT.to_string(), "username": "bot", "discriminator": "0", "avatar": null, "bot": true},
+		"roles": roles.iter().map(u64::to_string).collect::<Vec<_>>(),
+		"joined_at": "2024-01-01T00:00:00.000000+00:00", "deaf": false, "mute": false, "flags": 0
+	});
+	let paths = Arc::new(std::sync::Mutex::new(Vec::new()));
+	let recorded = Arc::clone(&paths);
+	let app = axum::Router::new().fallback(move |uri: axum::http::Uri| {
+		let member = member.clone();
+		let recorded = Arc::clone(&recorded);
+		async move {
+			recorded.lock().unwrap().push(uri.path().to_owned());
+			axum::Json(member)
+		}
+	});
+	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let addr = listener.local_addr().unwrap().to_string();
+	tokio::spawn(async move {
+		let _ = axum::serve(listener, app).await;
+	});
+	(addr, paths)
+}
+
+/// REST で取り直した Bot の役職で判定すること (キャッシュの役職が古くても、新しい役職で入れる)。
+#[tokio::test]
+async fn rest_roles_override_stale_cached_roles() {
+	// キャッシュの Bot には役職が無く、それだけなら接続を断られる
+	let cache = cache_with(&[], BOT_ROLE, 0, &[]);
+	assert_eq!(
+		check(Arc::clone(&cache)).await,
+		AccessVerdict::Denied(Denial::Missing(vec![VoicePermission::Connect]))
+	);
+	// REST は接続を許す役職を返す
+	let (addr, paths) = start_member_server(&[BOT_ROLE]).await;
+	let http = Client::builder()
+		.token("Bot test".to_string())
+		.proxy(addr, true)
+		.build();
+	let access = DiscordVoiceAccess::new(
+		Arc::new(http),
+		cache,
+		UserId::new(BOT),
+		Duration::from_secs(3),
+	);
+	assert_eq!(
+		access.check(GuildId::new(GUILD), ChannelId::new(VC)).await,
+		AccessVerdict::Allowed
+	);
+	let paths = paths.lock().unwrap().clone();
+	assert_eq!(paths.len(), 1, "{paths:?}");
+	assert!(
+		paths[0].ends_with(&format!("/guilds/{GUILD}/members/{BOT}")),
+		"{paths:?}"
 	);
 }

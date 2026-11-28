@@ -220,6 +220,20 @@ fn put_stream_overwrites_previous_entry() {
 	);
 }
 
+/// 切り離した書き込みが遅れて届いても、期限の古い結果で新しい結果を上書きしないこと。
+#[test]
+fn put_stream_keeps_entry_with_later_expiry() {
+	let c = conn();
+	let mut newer = stream(1, 5000);
+	newer.url = "https://example.invalid/new".to_string();
+	cache::put_stream(&c, &newer).unwrap();
+	cache::put_stream(&c, &stream(1, 1000)).unwrap();
+	assert_eq!(
+		cache::get_stream(&c, &item(1).video_id, 0, 0).unwrap(),
+		Some(newer)
+	);
+}
+
 #[test]
 fn live_stream_is_not_cached() {
 	let c = conn();

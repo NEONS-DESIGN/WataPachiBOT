@@ -21,6 +21,7 @@ URL と動作:
 	hang-once:<path>   <path> が無ければ作って応答しない (hang の行を書く)。あれば成功を返す
 	die                応答せずに終了する
 	die-once:<path>    <path> が無ければ作って終了する。あれば成功を返す
+	partial-once:<path> <path> が無ければ作り、応答の途中まで (改行なし) を書いて終了する。あれば成功を返す
 	garbage            JSON でない行を返す
 	huge               10MB の 1 行を返す
 	slow:<秒>          指定の秒数の後に成功を返す
@@ -169,6 +170,16 @@ def handle(request: dict[str, Any], log: str | None) -> None:
 			with open(marker, "w", encoding="utf-8"):
 				pass
 			log_line(log, f"die {os.getpid()}")
+			os._exit(1)
+		success(request_id, {"url": url})
+	elif url.startswith("partial-once:"):
+		marker = url.split(":", 1)[1]
+		if not os.path.exists(marker):
+			with open(marker, "w", encoding="utf-8"):
+				pass
+			log_line(log, f"die {os.getpid()}")
+			sys.stdout.buffer.write(b'{"id": ' + str(request_id).encode() + b', "ok": tr')
+			sys.stdout.buffer.flush()
 			os._exit(1)
 		success(request_id, {"url": url})
 	elif url == "garbage":

@@ -860,6 +860,9 @@ struct Slot {
 	/// ワーカーへ渡す 1 要求の持ち時間 (秒)。
 	request_budget_secs: u64,
 	ping_interval: Duration,
+	/// 待機中の ping の応答を待つ上限 (`worker.ping_timeout_secs`、`timeout` 以下)。
+	/// 止まったワーカーを解決の上限まで待たずに見つけ、対話の要求を待たせないため
+	ping_timeout: Duration,
 	backoff: Backoff,
 	/// 次の起動の確認後に完了を返す入れ替え。
 	pending_replace: Option<ReplaceRequest>,
@@ -1112,7 +1115,7 @@ impl Slot {
 						ping.reset();
 					}
 					Some(SlotCommand::Ping) => {
-						let limit = self.timeout;
+						let limit = self.ping_timeout;
 						match self.call(process, &WorkerRequest::Ping, limit).await {
 							None => return Served::Stop { force: true },
 							Some(Ok(_)) | Some(Err(CallError::Rejected { .. })) => {
@@ -1316,6 +1319,11 @@ impl WorkerPool {
 		let worker_count = config.worker_count as usize;
 		// 0 は interval が受け付けない。設定の検証を経ない呼び出しでも落とさない
 		let ping_interval = Duration::from_secs(config.ping_interval_secs.max(1));
+		let ping_timeout = Duration::from_secs(
+			config
+				.ping_timeout_secs
+				.clamp(1, config.resolve_timeout_secs.max(1)),
+		);
 		let startup_timeout = Duration::from_secs(config.startup_timeout_secs);
 		let request_budget_secs = request_budget_secs(config.resolve_timeout_secs);
 		let pause = Arc::new(PauseGate::new(config));
@@ -1339,6 +1347,7 @@ impl WorkerPool {
 				startup_timeout,
 				request_budget_secs,
 				ping_interval,
+				ping_timeout,
 				backoff: Backoff::new(),
 				pending_replace: None,
 				generation: None,

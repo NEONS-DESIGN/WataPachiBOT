@@ -265,6 +265,9 @@ async fn skip_during_resolve_cancels_it() {
 	})
 	.await;
 	env.barrier().await;
+	// 飛ばした曲の解決は止める (プールの待ち行列に残さない)。次の曲の解決は続く
+	assert_eq!(env.resolver.waiting(&a), 0, "飛ばした曲の解決が残っている");
+	assert_eq!(env.resolver.waiting(&b), 1);
 
 	// 次の曲も解決中のうちに、飛ばした曲の解決が届いても、その曲を再生しない
 	env.resolver.release(&a);
@@ -1281,6 +1284,45 @@ async fn move_denied_does_not_move() {
 	assert!(!env.has_notice("control.moved"));
 	assert_eq!(env.playback()[0].voice_channel_id, voice());
 	assert_eq!(stops(&env.audio), 0);
+}
+
+/// `?p` の参加の前の確認が応答しなければ、上限時間の後に確かめずに参加すること。
+#[tokio::test(start_paused = true)]
+async fn play_check_hang_falls_back_to_joining() {
+	let env = Env::new();
+	let a = vid('a');
+	env.set_videos(&[&a]);
+	env.access.hang();
+
+	env.play(&watch_url(&a));
+	wait_until("参加の前の確認", || env.access.calls().len() == 1).await;
+	env.barrier().await;
+	assert_eq!(connects(&env.audio), 0, "確認の前に接続した");
+	let limit = watapachi_bot::audio::limits::VoiceLimits::new(&env.config.voice).access();
+	tokio::time::advance(limit).await;
+	wait_until("再生の開始", || started(&env.audio, &a)).await;
+	assert_eq!(connects(&env.audio), 1);
+}
+
+/// 参加の前の確認の最中に `?leave` したら、確認が終わっても接続しないこと。
+#[tokio::test(start_paused = true)]
+async fn leave_during_access_check_does_not_connect() {
+	let env = Env::new();
+	let a = vid('a');
+	env.set_videos(&[&a]);
+	env.access.hang();
+
+	env.play(&watch_url(&a));
+	wait_until("参加の前の確認", || env.access.calls().len() == 1).await;
+	env.send(GuildCommand::Leave);
+	wait_until("退出の通知", || env.has_notice("control.left")).await;
+	let limit = watapachi_bot::audio::limits::VoiceLimits::new(&env.config.voice).access();
+	tokio::time::advance(limit).await;
+	settle().await;
+	env.barrier().await;
+	assert_eq!(connects(&env.audio), 0, "退出の後に接続した");
+	assert!(plays(&env.audio).is_empty());
+	assert!(env.playback().is_empty());
 }
 
 #[tokio::test(start_paused = true)]

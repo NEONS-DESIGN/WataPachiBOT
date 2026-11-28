@@ -47,6 +47,15 @@ fn default_access_check_timeout() -> u64 {
 	DEFAULT_ACCESS_CHECK_TIMEOUT_SECS
 }
 
+/// `worker.ping_timeout_secs` の省略時の値 (秒)。
+/// ping は数 ms で返り、応答の後の温め直し (1.5 秒以内) を待っても十分に収まる長さにする
+pub const DEFAULT_PING_TIMEOUT_SECS: u64 = 10;
+
+/// `worker.ping_timeout_secs` の省略時の値を返す (serde の既定値)。
+fn default_ping_timeout() -> u64 {
+	DEFAULT_PING_TIMEOUT_SECS
+}
+
 /// `ui.user_avatar_url` の既定値 (Discord の CDN)。
 pub const DEFAULT_USER_AVATAR_URL: &str = "https://cdn.discordapp.com/avatars/{user}/{hash}.png";
 /// `ui.member_avatar_url` の既定値 (Discord の CDN)。
@@ -168,6 +177,11 @@ pub struct WorkerConfig {
 	/// 起動 (再起動) したワーカーが最初の ping に答えるまでの上限 (秒)。超えたら起動の失敗として扱う。
 	pub startup_timeout_secs: u64,
 	pub ping_interval_secs: u64,
+	/// 待機中のワーカーへの ping の応答を待つ上限 (秒)。超えたら止まったワーカーとして再起動する。
+	/// `resolve_timeout_secs` より長ければ `resolve_timeout_secs` を使う。
+	/// 省略時は `DEFAULT_PING_TIMEOUT_SECS` (この項目より前に作った `config.toml` を読めるようにする)
+	#[serde(default = "default_ping_timeout")]
+	pub ping_timeout_secs: u64,
 	pub max_retries: u32,
 	/// `rate_limited` で解決をやり直すまでの最初の待ち時間 (秒)。やり直すたびに倍にする。
 	pub rate_limit_backoff_secs: u64,
@@ -430,6 +444,7 @@ impl Config {
 		)?;
 		check_secs(w.startup_timeout_secs, 1, "worker.startup_timeout_secs")?;
 		check_secs(w.ping_interval_secs, 1, "worker.ping_interval_secs")?;
+		check_secs(w.ping_timeout_secs, 1, "worker.ping_timeout_secs")?;
 		check_secs(
 			w.rate_limit_backoff_secs,
 			1,

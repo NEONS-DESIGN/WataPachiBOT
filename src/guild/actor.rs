@@ -957,7 +957,7 @@ impl GuildActor {
 		let settings = self.settings().await;
 		let guild = self.guild;
 		let played_at = finished.started_at;
-		let loop_limit = settings.loop_enabled.then_some(settings.queue_limit);
+		let loop_limit = settings.loop_limit();
 		let item = finished.item;
 		let popped = self
 			.write(move |c| {
@@ -1601,7 +1601,7 @@ impl GuildActor {
 		let settings = self.settings().await;
 		let guild = self.guild;
 		let played_at = finished.started_at;
-		let loop_limit = settings.loop_enabled.then_some(settings.queue_limit);
+		let loop_limit = settings.loop_limit();
 		let item = finished.item;
 		if let Err(error) = self
 			.write(move |c| store::finish(c, guild, &item, played_at, loop_limit))
@@ -1922,8 +1922,32 @@ impl GuildActor {
 	fn set_current(&mut self, item: Option<NewQueueItem>) {
 		// 前の曲の解決のやり直しの待ちは捨てる
 		let generation = self.advance_generation(RetryWait::Discard);
+		self.abort_stale_resolves(item.as_ref().map(|item| &item.video_id));
 		self.played_in_session |= item.is_some();
 		self.current = item.map(|item| CurrentTrack::new(item, generation));
+	}
+
+	/// 前の曲の解決のタスクを止める。新しい今の曲と同じ動画のものは残す。
+	///
+	/// - 結果は世代の照合で捨てられるが、プールの待ち行列に残ると新しい今の曲の解決がその後ろに並ぶ。
+	///   止めると待ち行列から外れる (ワーカーが処理を始めていれば、その処理は続く)
+	/// - 同じ動画 (`?replay` や曲の作り直し) の解決は、結果がキャッシュに入り新しい解決に使えるため止めない
+	///
+	/// # 引数
+	/// - `keep`: 新しい今の曲の動画。None なら今の曲が無くなる
+	///
+	/// # 呼び出し例
+	/// ```ignore
+	/// self.abort_stale_resolves(Some(&item.video_id));
+	/// ```
+	fn abort_stale_resolves(&mut self, keep: Option<&VideoId>) {
+		for (kind, handle) in self.task_kinds.values() {
+			if let TaskKind::Resolve { video_id, .. } = kind {
+				if Some(video_id) != keep {
+					handle.abort();
+				}
+			}
+		}
 	}
 
 	/// 曲の世代を 1 つ進める。世代を進める処理はすべてここを通す。
@@ -2044,6 +2068,45 @@ impl GuildActor {
 	/// self.notify(channel, plain(keys::SLOW));
 	/// ```
 	fn notify(&self, channel: ChannelId, notice: Notice) {
+		self.send_notice(channel, notice);
+	}
+
+	/// 接頭辞を差し込んだ案内を作る。保存 (`saved`) に失敗していれば代わりに `error.save_failed`。
+	///
+	/// - 再生を止めてキューを残すとき、回復や復元に失敗したときの案内 (`?p` での再開を勧める) に使う
+	///
+	/// # 引数
+	/// - `key`: 案内のキー (`{prefix}` を含む)
+	/// - `saved`: キューと再生状態の書き込みの結果
+	///
+	/// # 戻り値
+	/// 送る通知
+	///
+	/// # 呼び出し例
+	/// ```ignore
+	/// let notice = self.resume_notice(keys::REJOIN_FAILED, &saved);
+	/// ```
+	pub(super) fn resume_notice<T, E>(&self, key: &'static str, saved: &Result<T, E>) -> Notice {
+		match saved {
+			Ok(_) => with_args(
+				key,
+				[(keys::ARG_PREFIX, self.deps.config.bot.prefix.clone())],
+			),
+			Err(_) => plain(keys::SAVE_FAILED),
+		}
+	}
+
+	/// 通知を通知のタスクへ渡す。`notify` の本体。
+	///
+	/// # 引数
+	/// - `channel`: 送り先のテキストチャンネル
+	/// - `notice`: 通知
+	///
+	/// # 呼び出し例
+	/// ```ignore
+	/// self.send_notice(channel, notice);
+	/// ```
+	fn send_notice(&self, channel: ChannelId, notice: Notice) {
 		if self.notices.send((channel, notice)).is_err() {
 			tracing::warn!(
 				guild = self.guild.get(),

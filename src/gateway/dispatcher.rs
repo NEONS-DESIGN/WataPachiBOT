@@ -738,24 +738,29 @@ impl Dispatcher {
 	/// ```
 	fn on_voice_state(self: &Arc<Self>, guild: GuildId, user: UserId) {
 		let own = user == self.bot_id;
+		// 印の確認・最初の送信・印の登録を 1 つのロックの中で行い、送り直しのタスクが 2 本にならないようにする
 		{
 			let mut resends = self.lock_voice_resends();
 			if let Some(pending_own) = resends.get_mut(&guild) {
 				*pending_own |= own;
 				return;
 			}
+			if self.try_send_listeners(guild, own) != Err(SendError::Busy) {
+				return;
+			}
+			resends.insert(guild, own);
 		}
-		if self.try_send_listeners(guild, own) != Err(SendError::Busy) {
-			return;
-		}
-		self.lock_voice_resends().insert(guild, own);
 		let this = Arc::clone(self);
 		tokio::spawn(async move {
+			// タスクが終わる・止められる・panic するどの場合も印を外す (残ると以後の更新が送られなくなる)
+			let _resend = ResendMark {
+				dispatcher: Arc::clone(&this),
+				guild,
+			};
 			let limit = Duration::from_secs(this.config.gateway.event_send_timeout_secs);
 			let deadline = Instant::now() + limit;
 			loop {
 				if Instant::now() >= deadline {
-					this.lock_voice_resends().remove(&guild);
 					tracing::warn!(
 						guild = guild.get(),
 						"アクターが混み合っているため聴者の数を届けられませんでした"
@@ -812,6 +817,21 @@ impl Dispatcher {
 			Some(channel) => Some(listeners_in_channel(&self.cache, channel, self.bot_id)),
 			None => own.then_some(0),
 		}
+	}
+}
+
+/// 聴者の数の送り直しの印。破棄で表から外す。
+///
+/// - 送り直しのタスクが持ち、終わり方 (送れた、期限切れ、取り消し、panic) にかかわらず印を残さない
+struct ResendMark {
+	dispatcher: Arc<Dispatcher>,
+	guild: GuildId,
+}
+
+impl Drop for ResendMark {
+	/// 送り直しの印を外す。すでに外していれば何もしない。
+	fn drop(&mut self) {
+		self.dispatcher.lock_voice_resends().remove(&self.guild);
 	}
 }
 

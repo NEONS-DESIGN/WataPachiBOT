@@ -20,6 +20,16 @@ pub struct GuildSettings {
 	pub loop_enabled: bool,
 }
 
+impl GuildSettings {
+	/// ループ中なら、終えた曲をキューへ戻すときの上限件数 (`queue_limit`)。ループしていなければ None。
+	///
+	/// # 呼び出し例
+	/// `store::finish(c, guild, &item, played_at, settings.loop_limit())`
+	pub fn loop_limit(&self) -> Option<u32> {
+		self.loop_enabled.then_some(self.queue_limit)
+	}
+}
+
 /// 設定を読む。行が無い、または列が NULL の項目は既定値を使う。
 ///
 /// # 引数

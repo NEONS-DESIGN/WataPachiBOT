@@ -316,13 +316,7 @@ impl GuildActor {
 		let Some(channels) = channels else {
 			return;
 		};
-		let notice = match saved {
-			Ok(()) => {
-				let prefix = self.deps.config.bot.prefix.clone();
-				with_args(key, [(keys::ARG_PREFIX, prefix)])
-			}
-			Err(_) => plain(keys::SAVE_FAILED),
-		};
+		let notice = self.resume_notice(key, &saved);
 		self.notify(channels.text, notice);
 	}
 
@@ -761,13 +755,8 @@ impl GuildActor {
 			.rejoin_reply
 			.take()
 			.or(self.channels.map(|channels| channels.text));
-		let notice = match self.leave_keeping_queue().await {
-			Ok(()) => {
-				let prefix = self.deps.config.bot.prefix.clone();
-				with_args(keys::REJOIN_FAILED, [(keys::ARG_PREFIX, prefix)])
-			}
-			Err(_) => plain(keys::SAVE_FAILED),
-		};
+		let saved = self.leave_keeping_queue().await;
+		let notice = self.resume_notice(keys::REJOIN_FAILED, &saved);
 		if let Some(reply) = reply {
 			self.notify(reply, notice);
 		}

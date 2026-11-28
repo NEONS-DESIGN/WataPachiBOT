@@ -44,6 +44,7 @@ fn config(workers: u32, reserved: u32, timeout_secs: u64) -> WorkerConfig {
 		resolve_timeout_secs: timeout_secs,
 		startup_timeout_secs: 60,
 		ping_interval_secs: 3600,
+		ping_timeout_secs: 10,
 		max_retries: 3,
 		rate_limit_backoff_secs: 5,
 		rate_limit_backoff_max_secs: 60,
@@ -473,6 +474,22 @@ async fn dead_worker_request_is_retried_once() {
 			u64::from(dead[0]),
 			"別のワーカーで再試行する"
 		);
+		fixture.pool.shutdown().await;
+	})
+	.await;
+}
+
+/// 応答を書く途中で死んだワーカーの要求は、不正な応答ではなく死亡として 1 回やり直すこと。
+#[tokio::test]
+async fn partial_response_before_death_is_retried_as_death() {
+	within(async {
+		let fixture = Fixture::start(config(2, 0, 30)).await;
+		let marker = fixture.dir.path().join("marker");
+		let url = format!("partial-once:{}", marker.display());
+		let value = fixture.submit(&url).await.expect("再試行で成功");
+		let dead = fixture.pids("die");
+		assert_eq!(dead.len(), 1);
+		assert_ne!(pid_of(&value), u64::from(dead[0]));
 		fixture.pool.shutdown().await;
 	})
 	.await;

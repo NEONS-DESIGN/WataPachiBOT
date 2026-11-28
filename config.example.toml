@@ -37,6 +37,7 @@ prefetch_reserved_workers = 1
 resolve_timeout_secs = 30     # ワーカーへ渡す 1 要求の持ち時間は、ここから 2 秒を引いた値
 startup_timeout_secs = 60     # 起動 (再起動) したワーカーが最初の ping に答えるまでの上限。超えたら起動の失敗として扱う
 ping_interval_secs = 30
+ping_timeout_secs = 10        # 待機中のワーカーへの ping の応答を待つ上限。超えたら再起動する (resolve_timeout_secs より長ければそちら)。省略時 10
 max_retries = 3
 rate_limit_backoff_secs = 5   # rate_limited の最初の待ち時間。やり直すたびに倍にする
 rate_limit_backoff_max_secs = 60

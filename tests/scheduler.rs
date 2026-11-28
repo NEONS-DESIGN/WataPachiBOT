@@ -198,6 +198,7 @@ fn worker_config() -> WorkerConfig {
 		resolve_timeout_secs: 30,
 		startup_timeout_secs: 60,
 		ping_interval_secs: 3600,
+		ping_timeout_secs: 10,
 		max_retries: 3,
 		rate_limit_backoff_secs: 600,
 		rate_limit_backoff_max_secs: 600,

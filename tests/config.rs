@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 
 use watapachi_bot::audio::limits::VoiceLimits;
 use watapachi_bot::config::{
-	Config, ConfigError, DEFAULT_ACCESS_CHECK_TIMEOUT_SECS, MAX_DURATION_SECS,
-	MAX_RESTORE_STAGGER_MS, MAX_SHUTDOWN_TIMEOUT_SECS, MAX_WORKER_COUNT,
+	Config, ConfigError, DEFAULT_ACCESS_CHECK_TIMEOUT_SECS, DEFAULT_PING_TIMEOUT_SECS,
+	MAX_DURATION_SECS, MAX_RESTORE_STAGGER_MS, MAX_SHUTDOWN_TIMEOUT_SECS, MAX_WORKER_COUNT,
 };
 use watapachi_bot::lang::Lang;
 use watapachi_bot::messages::{Messages, NoticeColor, NOTICE_KEYS};
@@ -415,6 +415,7 @@ fn durations_are_bounded() {
 		("pagination_timeout_secs", "ui.pagination_timeout_secs"),
 		("startup_timeout_secs", "worker.startup_timeout_secs"),
 		("ping_interval_secs", "worker.ping_interval_secs"),
+		("ping_timeout_secs", "worker.ping_timeout_secs"),
 		("install_timeout_secs", "update.install_timeout_secs"),
 		("check_timeout_secs", "update.check_timeout_secs"),
 		(
@@ -493,6 +494,24 @@ fn actor_idle_timeout_must_exceed_voice_connect_limit() {
 		invalid_key(&text).as_deref(),
 		Some("limits.actor_idle_timeout_secs")
 	);
+}
+
+#[test]
+fn ping_timeout_is_checked_and_defaults_when_omitted() {
+	let config = Config::load(&root("config.example.toml")).unwrap();
+	assert_eq!(config.worker.ping_timeout_secs, 10);
+	assert_eq!(
+		invalid_key(&replace_line("ping_timeout_secs", 0)).as_deref(),
+		Some("worker.ping_timeout_secs")
+	);
+	// この項目より前に作った config.toml も読める
+	let omitted: String = example_text()
+		.lines()
+		.filter(|line| !line.starts_with("ping_timeout_secs = "))
+		.map(|line| format!("{line}\n"))
+		.collect();
+	let config = load_text(&omitted).unwrap();
+	assert_eq!(config.worker.ping_timeout_secs, DEFAULT_PING_TIMEOUT_SECS);
 }
 
 #[test]

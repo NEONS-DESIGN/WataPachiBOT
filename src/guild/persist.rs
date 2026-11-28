@@ -28,7 +28,7 @@ use crate::db::playback::{self, PlaybackState};
 use crate::db::queue::{self, NewQueueItem};
 use crate::db::DbError;
 use crate::guild::message::RestoreRequest;
-use crate::guild::notices::{keys, plain, titled, titled_text, with_args};
+use crate::guild::notices::{keys, titled, titled_text, with_args};
 use crate::guild::notifier::{Card, TrackCard};
 use crate::guild::state::{PlayerState, SessionChannels};
 use crate::guild::store;
@@ -277,13 +277,7 @@ impl GuildActor {
 		let Some(channels) = channels else {
 			return;
 		};
-		let notice = match result {
-			Ok(_) => {
-				let prefix = self.deps.config.bot.prefix.clone();
-				with_args(keys::RESTORE_FAILED, [(keys::ARG_PREFIX, prefix)])
-			}
-			Err(_) => plain(keys::SAVE_FAILED),
-		};
+		let notice = self.resume_notice(keys::RESTORE_FAILED, &result);
 		self.notify(channels.text, notice);
 	}
 
