@@ -61,6 +61,9 @@ pub enum ShardExit {
 /// # 引数
 /// - `bot`: `[bot]` の設定
 ///
+/// # 戻り値
+/// Shard の設定に渡すステータス
+///
 /// # エラー
 /// - Discord の制約に合わないとき (活動が空など。名前は設定の検証で空にならない)
 ///
@@ -79,6 +82,9 @@ pub fn presence(bot: &BotConfig) -> anyhow::Result<UpdatePresencePayload> {
 }
 
 /// `CACHE_RESOURCES` だけをキャッシュする `InMemoryCache` を作る。
+///
+/// # 戻り値
+/// 空のキャッシュ
 ///
 /// # 呼び出し例
 /// ```ignore
@@ -178,6 +184,12 @@ pub async fn run_shard(
 }
 
 /// 再接続しない形で受信が終わったことをログに残す。閉じる理由のコードが分かれば名前も添える。
+///
+/// # 引数
+/// - `close_code`: 最後に受けた閉じる理由のコード (受けていなければ None)
+///
+/// # 呼び出し例
+/// `log_fatal(last_close);`
 fn log_fatal(close_code: Option<u16>) {
 	let reason = close_code.and_then(|code| CloseCode::try_from(code).ok());
 	tracing::error!(
@@ -188,6 +200,14 @@ fn log_fatal(close_code: Option<u16>) {
 }
 
 /// Shard を閉じ、閉じた応答を `CLOSE_WAIT` まで待つ。
+///
+/// - 待つ間に届いたほかのイベントは捨てる。過ぎたら warn のログを残して戻る
+///
+/// # 引数
+/// - `shard`: 閉じる Shard
+///
+/// # 呼び出し例
+/// `close(&mut shard).await;`
 async fn close(shard: &mut Shard) {
 	shard.close(CloseFrame::NORMAL);
 	let drained = tokio::time::timeout(CLOSE_WAIT, async {

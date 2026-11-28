@@ -124,6 +124,9 @@ impl Dispatcher {
 	/// # 引数
 	/// - `parts`: 使う部品
 	///
+	/// # 戻り値
+	/// 振り分け役 (shard のループと終了の処理で共有する)
+	///
 	/// # 呼び出し例
 	/// ```ignore
 	/// let dispatcher = Dispatcher::new(DispatcherParts { http, cache, notifier, registry, db, config, catalog, langs, bot_id });
@@ -206,6 +209,12 @@ impl Dispatcher {
 	}
 
 	/// 起動の準備の門のロック。毒されていても中身を使う (状態は単純な集合と時刻のため)。
+	///
+	/// # 戻り値
+	/// 門のロックのガード
+	///
+	/// # 呼び出し例
+	/// `self.lock_ready().on_guild_create(guild);`
 	fn lock_ready(&self) -> std::sync::MutexGuard<'_, ReadyGate> {
 		self.ready.lock().unwrap_or_else(PoisonError::into_inner)
 	}
@@ -213,6 +222,14 @@ impl Dispatcher {
 	/// `Ready` を受けた。門に渡し、期限の確認を予約する。
 	///
 	/// - 2 回目以降 (再接続) は門が無視する。予約した確認も門が開かないので何もしない
+	///
+	/// # 引数
+	/// - `guilds`: `Ready` に載っていたギルド
+	///
+	/// # 呼び出し例
+	/// ```ignore
+	/// tokio::spawn(Arc::clone(self).on_ready(guilds));
+	/// ```
 	async fn on_ready(self: Arc<Self>, guilds: Vec<GuildId>) {
 		self.lock_ready().on_ready(guilds, Instant::now());
 		let wait = Duration::from_secs(self.config.gateway.ready_wait_secs);
@@ -228,6 +245,11 @@ impl Dispatcher {
 	///
 	/// - 門は 1 回しか開かないので、復元も 1 回だけ行う
 	/// - 終了の処理に入っていたら受付を始めない
+	///
+	/// # 呼び出し例
+	/// ```ignore
+	/// self.check_ready().await;
+	/// ```
 	async fn check_ready(&self) {
 		let opened = self.lock_ready().poll(Instant::now());
 		if !opened {
@@ -273,6 +295,16 @@ impl Dispatcher {
 	}
 
 	/// 通知を送る。失敗は送信側でログに残す。
+	///
+	/// # 引数
+	/// - `channel`: 送り先
+	/// - `key`: 文面のキー
+	/// - `args`: 文面に埋める値 (名前と値)
+	///
+	/// # 呼び出し例
+	/// ```ignore
+	/// self.reply(channel, keys::BUSY, Vec::new()).await;
+	/// ```
 	async fn reply(
 		&self,
 		channel: ChannelId,
@@ -286,6 +318,15 @@ impl Dispatcher {
 	///
 	/// - アクターへ渡すコマンドはその場で送る (受信の順序を保つため)
 	/// - 返信とアクターを通さないコマンドは別タスクで行う
+	/// - 終了の処理に入っていたら何もしない
+	///
+	/// # 引数
+	/// - `message`: 受けたメッセージ (本文は取り出して使う)
+	///
+	/// # 呼び出し例
+	/// ```ignore
+	/// self.on_message(message.0);
+	/// ```
 	fn on_message(self: &Arc<Self>, mut message: Message) {
 		if self.stopped.load(Ordering::SeqCst) {
 			return;
@@ -337,6 +378,16 @@ impl Dispatcher {
 	/// - 使い方の誤りは `error.invalid_argument` に、そのコマンドの使い方 (`help.usage_*`) を添える
 	/// - 範囲外は `error.out_of_range`
 	/// - 使い方はサーバーの言語で描く (サーバーが無ければ既定の言語)
+	///
+	/// # 引数
+	/// - `guild`: メッセージのサーバー (DM なら None)
+	/// - `channel`: 返信先
+	/// - `error`: 解析の誤り
+	///
+	/// # 呼び出し例
+	/// ```ignore
+	/// self.reply_parse_error(guild, channel, error).await;
+	/// ```
 	async fn reply_parse_error(
 		&self,
 		guild: Option<GuildId>,
@@ -360,6 +411,18 @@ impl Dispatcher {
 	}
 
 	/// 解析済みのコマンドを実行する。
+	///
+	/// - アクターへのコマンドは `send_to_actor` へ、`?help`・一覧・`?setting` はここで処理する
+	///
+	/// # 引数
+	/// - `guild`: メッセージのサーバー
+	/// - `message`: 受けたメッセージ (返信先と実行者に使う)
+	/// - `command`: 解析済みのコマンド
+	///
+	/// # 呼び出し例
+	/// ```ignore
+	/// this.run_command(guild, &message, command).await;
+	/// ```
 	async fn run_command(
 		self: &Arc<Self>,
 		guild: GuildId,
@@ -389,6 +452,19 @@ impl Dispatcher {
 	}
 
 	/// アクターへコマンドをその場で送る。メールボックスが満杯なら `error.busy` を別タスクで返す。
+	///
+	/// - アクターが無ければ起動する
+	/// - 実行者のボイスチャンネルはキャッシュから取る
+	///
+	/// # 引数
+	/// - `guild`: 対象のギルド
+	/// - `message`: 受けたメッセージ (返信先と実行者に使う)
+	/// - `command`: アクターへ渡すコマンド
+	///
+	/// # 呼び出し例
+	/// ```ignore
+	/// self.send_to_actor(guild, &message, command);
+	/// ```
 	fn send_to_actor(self: &Arc<Self>, guild: GuildId, message: &Message, command: GuildCommand) {
 		let context = CommandContext {
 			text_channel: message.channel_id,
@@ -412,11 +488,22 @@ impl Dispatcher {
 
 	/// ページの内容を作る。
 	///
+	/// # 引数
+	/// - `kind`: ページの種類
+	/// - `guild`: 対象のギルド (DM なら None)
+	/// - `page`: ページの番号 (0 始まり)
+	/// - `issued_at`: ボタンの発行時刻 (UNIX 秒)
+	///
 	/// # 戻り値
-	/// キューと履歴でギルドが無い (DM) なら None
+	/// ページの Embed とボタン。キューと履歴でギルドが無い (DM) なら None
 	///
 	/// # エラー
 	/// - DB の読み取りの失敗
+	///
+	/// # 呼び出し例
+	/// ```ignore
+	/// let reply = self.page(PageKind::Queue, Some(guild), 0, now_secs()).await?;
+	/// ```
 	async fn page(
 		&self,
 		kind: PageKind,
@@ -447,6 +534,16 @@ impl Dispatcher {
 	/// `?qlist` と `?history` の最初のページを送る。
 	///
 	/// - 読めない、または `DB_WAIT_LIMIT` を過ぎたら `error.read_failed`
+	///
+	/// # 引数
+	/// - `guild`: 対象のギルド
+	/// - `channel`: 送り先
+	/// - `kind`: 一覧の種類 (`Queue` か `History`)
+	///
+	/// # 呼び出し例
+	/// ```ignore
+	/// self.send_list(guild, channel, PageKind::Queue).await;
+	/// ```
 	async fn send_list(&self, guild: GuildId, channel: ChannelId, kind: PageKind) {
 		let page = self.page(kind, Some(guild), 0, now_secs());
 		match tokio::time::timeout(DB_WAIT_LIMIT, page).await {
@@ -467,6 +564,17 @@ impl Dispatcher {
 	}
 
 	/// Embed とボタンを送る。ボタンがあれば、灰色にする期限を記録する。
+	///
+	/// - 送れなければ (失敗は送信側でログに残す) 期限を記録しない
+	///
+	/// # 引数
+	/// - `channel`: 送り先
+	/// - `reply`: 送る Embed とボタン
+	///
+	/// # 呼び出し例
+	/// ```ignore
+	/// self.send_reply(channel, reply).await;
+	/// ```
 	async fn send_reply(&self, channel: ChannelId, reply: Reply) {
 		let sent = self
 			.notifier
@@ -536,8 +644,18 @@ impl Dispatcher {
 
 	/// 実行者の、ギルド全体の権限の入力と、タイムアウト中か。
 	///
+	/// # 引数
+	/// - `guild`: メッセージのサーバー
+	/// - `message`: 受けたメッセージ (`member` の役職とタイムアウトの期限を使う)
+	///
 	/// # 戻り値
-	/// (権限の入力、タイムアウト中か)。`member` が無い、またはギルドか `@everyone` がキャッシュに無ければ入力は None
+	/// (権限の入力、タイムアウト中か)。`member` が無い、またはギルドか `@everyone` がキャッシュに無ければ入力は None。
+	/// `member` が無ければタイムアウト中でないものとする
+	///
+	/// # 呼び出し例
+	/// ```ignore
+	/// let (data, timed_out) = self.author_permissions(guild, message);
+	/// ```
 	fn author_permissions(
 		&self,
 		guild: GuildId,
@@ -555,6 +673,17 @@ impl Dispatcher {
 	///
 	/// - タイムアウト中のメンバーは、サーバー管理者でなければ断る
 	/// - Bot 管理者かを読めない、または `DB_WAIT_LIMIT` を過ぎたら `error.read_failed`
+	/// - 権限が無ければ `error.no_permission`
+	///
+	/// # 引数
+	/// - `guild`: 対象のギルド
+	/// - `message`: 受けたメッセージ (返信先と実行者に使う)
+	/// - `command`: 解析済みの操作
+	///
+	/// # 呼び出し例
+	/// ```ignore
+	/// self.setting(guild, message, command).await;
+	/// ```
 	async fn setting(&self, guild: GuildId, message: &Message, command: SettingCommand) {
 		let channel = message.channel_id;
 		let user = message.author.id;
@@ -655,6 +784,11 @@ impl Dispatcher {
 	/// # 引数
 	/// - `interaction`: 受けたインタラクション
 	/// - `deadline`: ページの作成を打ち切る時刻
+	///
+	/// # 呼び出し例
+	/// ```ignore
+	/// tokio::spawn(async move { this.on_interaction(interaction.0, deadline).await });
+	/// ```
 	async fn on_interaction(&self, interaction: Interaction, deadline: tokio::time::Instant) {
 		if self.stopped.load(Ordering::SeqCst)
 			|| interaction.kind != InteractionType::MessageComponent
@@ -782,6 +916,9 @@ impl Dispatcher {
 
 	/// 送り直しの表をロックする。毒されていても中身を使う (値は単純な印のため)。
 	///
+	/// # 戻り値
+	/// 送り直しの表のロックのガード
+	///
 	/// # 呼び出し例
 	/// `self.lock_voice_resends().remove(&guild);`
 	fn lock_voice_resends(&self) -> std::sync::MutexGuard<'_, HashMap<GuildId, bool>> {
@@ -792,9 +929,20 @@ impl Dispatcher {
 
 	/// 聴者の数を数えてアクターへ 1 回送る。
 	///
+	/// # 引数
+	/// - `guild`: 対象のギルド
+	/// - `own`: Bot 自身の更新を含むか (Bot が切断されていれば 0 人として送るため)
+	///
 	/// # 戻り値
-	/// 送った、送る必要が無い (Bot が接続していない)、またはアクターが動いていなければ Ok 相当。
-	/// メールボックスが満杯なら `Err(SendError::Busy)`
+	/// 送った、送る必要が無い (Bot が接続していない)、またはアクターが動いていなければ Ok
+	///
+	/// # エラー
+	/// - メールボックスが満杯なら `SendError::Busy`
+	///
+	/// # 呼び出し例
+	/// ```ignore
+	/// if self.try_send_listeners(guild, own) == Err(SendError::Busy) { /* 送り直す */ }
+	/// ```
 	fn try_send_listeners(&self, guild: GuildId, own: bool) -> Result<(), SendError> {
 		let Some(listeners) = self.bot_listeners(guild, own) else {
 			return Ok(());
@@ -810,8 +958,17 @@ impl Dispatcher {
 
 	/// Bot がいるボイスチャンネルの聴者の数。
 	///
+	/// # 引数
+	/// - `guild`: 対象のギルド
+	/// - `own`: Bot 自身の更新を含むか
+	///
 	/// # 戻り値
 	/// Bot が接続していれば聴者の数。接続していなければ、Bot 自身の更新のときだけ 0、それ以外は None (送らない)
+	///
+	/// # 呼び出し例
+	/// ```ignore
+	/// let Some(listeners) = self.bot_listeners(guild, own) else { return Ok(()) };
+	/// ```
 	fn bot_listeners(&self, guild: GuildId, own: bool) -> Option<u32> {
 		match voice_channel_of(&self.cache, guild, self.bot_id) {
 			Some(channel) => Some(listeners_in_channel(&self.cache, channel, self.bot_id)),
@@ -836,6 +993,12 @@ impl Drop for ResendMark {
 }
 
 /// 何も変えずに受け付けたことだけを返す応答を作る (ボタンの「失敗しました」の表示を避ける)。
+///
+/// # 戻り値
+/// `DeferredUpdateMessage` の応答
+///
+/// # 呼び出し例
+/// `let response = deferred_update();`
 fn deferred_update() -> InteractionResponse {
 	InteractionResponse {
 		kind: InteractionResponseType::DeferredUpdateMessage,
@@ -844,6 +1007,17 @@ fn deferred_update() -> InteractionResponse {
 }
 
 /// メッセージの書き換えの応答を作る。
+///
+/// # 引数
+/// - `data`: 書き換える内容 (Embed やボタン)
+///
+/// # 戻り値
+/// `UpdateMessage` の応答
+///
+/// # 呼び出し例
+/// ```ignore
+/// let response = update_message(InteractionResponseDataBuilder::new().components(disabled));
+/// ```
 fn update_message(data: InteractionResponseDataBuilder) -> InteractionResponse {
 	InteractionResponse {
 		kind: InteractionResponseType::UpdateMessage,

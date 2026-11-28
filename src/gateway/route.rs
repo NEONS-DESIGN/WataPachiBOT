@@ -62,6 +62,9 @@ pub enum Route {
 /// - `bot_id`: この Bot のユーザー ID
 /// - `message`: メッセージの中身
 ///
+/// # 戻り値
+/// 振り分けの結果
+///
 /// # 呼び出し例
 /// ```ignore
 /// match route("?", &config.limits, true, bot_id, &incoming) { Route::Command(cmd) => { /* ... */ } _ => {} }
@@ -92,6 +95,16 @@ pub fn route(
 }
 
 /// 本文と `mentions` の両方に Bot へのメンションがあるか。
+///
+/// # 引数
+/// - `message`: メッセージの中身
+/// - `bot_id`: この Bot のユーザー ID
+///
+/// # 戻り値
+/// 両方にあれば true
+///
+/// # 呼び出し例
+/// `if mentions_bot(message, bot_id) { return Route::Mention; }`
 fn mentions_bot(message: &IncomingMessage, bot_id: UserId) -> bool {
 	if !message.mentions.contains(&bot_id) {
 		return false;
@@ -102,6 +115,12 @@ fn mentions_bot(message: &IncomingMessage, bot_id: UserId) -> bool {
 }
 
 /// Discord の時刻を UNIX 秒にする (秒未満は切り捨て)。
+///
+/// # 引数
+/// - `timestamp`: Discord の時刻
+///
+/// # 戻り値
+/// UNIX 秒
 ///
 /// # 呼び出し例
 /// ```ignore
@@ -116,6 +135,9 @@ pub fn unix_secs(timestamp: Timestamp) -> i64 {
 /// # 引数
 /// - `until`: メンバーの `communication_disabled_until`
 /// - `now`: 今の UNIX 秒
+///
+/// # 戻り値
+/// タイムアウト中なら true。`until` が None なら false
 ///
 /// # 呼び出し例
 /// ```ignore
@@ -140,6 +162,13 @@ pub enum SettingAccess {
 ///
 /// - サーバー管理者は許す。それ以外は Bot 管理者かを DB で確かめる
 /// - タイムアウト中のメンバーは、Bot 管理者でも許さない
+///
+/// # 引数
+/// - `server_admin`: 実行者がサーバー管理者か
+/// - `timed_out`: 実行者がタイムアウト中か
+///
+/// # 戻り値
+/// 判定の結果
 ///
 /// # 呼び出し例
 /// ```ignore
@@ -172,6 +201,12 @@ pub fn snowflake_unix_ms(snowflake: u64) -> u64 {
 }
 
 /// 今の時刻の UNIX ミリ秒。時計が起点より前なら None。
+///
+/// # 戻り値
+/// 今の UNIX ミリ秒。時計が起点より前か、`u64` に収まらなければ None
+///
+/// # 呼び出し例
+/// `let received = unix_ms_now();`
 pub(crate) fn unix_ms_now() -> Option<u64> {
 	let elapsed = SystemTime::now().duration_since(UNIX_EPOCH).ok()?;
 	u64::try_from(elapsed.as_millis()).ok()

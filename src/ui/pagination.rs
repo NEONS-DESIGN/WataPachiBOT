@@ -37,6 +37,12 @@ pub enum PageKind {
 
 impl PageKind {
 	/// custom_id に入れる文字列。
+	///
+	/// # 戻り値
+	/// `help`、`qlist`、`history` のどれか
+	///
+	/// # 例
+	/// `token.kind.as_str()`
 	fn as_str(self) -> &'static str {
 		match self {
 			PageKind::Help => "help",
@@ -46,6 +52,15 @@ impl PageKind {
 	}
 
 	/// custom_id の文字列から種類を戻す。知らない文字列は None。
+	///
+	/// # 引数
+	/// - `text`: custom_id の種類の部分
+	///
+	/// # 戻り値
+	/// 種類。知らない文字列なら None
+	///
+	/// # 例
+	/// `let kind = PageKind::parse(parts[0])?;`
 	fn parse(text: &str) -> Option<PageKind> {
 		match text {
 			"help" => Some(PageKind::Help),
@@ -70,6 +85,9 @@ pub struct PageToken {
 
 /// `PageToken` を custom_id の文字列にする。形式は `{kind}:{slot}:{target}:{issued_at}`。
 ///
+/// # 引数
+/// - `token`: ボタンの中身
+///
 /// # 戻り値
 /// 100 文字以内の文字列 (Discord の custom_id の上限)。
 ///
@@ -90,6 +108,9 @@ pub fn encode(token: &PageToken) -> String {
 }
 
 /// custom_id の文字列を `PageToken` に戻す。
+///
+/// # 引数
+/// - `custom_id`: 押されたボタンの custom_id
 ///
 /// # 戻り値
 /// 形式が違う、種類やスロットが未知、数値でない場合は None (他の機能のボタンかもしれない)。
@@ -122,6 +143,23 @@ pub fn decode(custom_id: &str) -> Option<PageToken> {
 }
 
 /// ボタン 1 つを作る。
+///
+/// # 引数
+/// - `kind`: ページ送りの対象
+/// - `slot`: ボタンの位置 (`SLOT_*`)
+/// - `target`: 押したときに表示するページ (0 始まり)
+/// - `issued_at`: 発行時刻 (UNIX 秒)
+/// - `label`: ボタンのラベル
+/// - `style`: ボタンの色
+/// - `disabled`: 押せなくするか
+///
+/// # 戻り値
+/// custom_id に `PageToken` を入れたボタン
+///
+/// # 例
+/// ```ignore
+/// let next = button(PageKind::Queue, SLOT_NEXT, 1, issued_at, LABEL_NEXT, ButtonStyle::Success, false);
+/// ```
 fn button(
 	kind: PageKind,
 	slot: char,
@@ -261,6 +299,14 @@ pub fn disable_all(components: &[Component]) -> Vec<Component> {
 ///
 /// - 時計が戻って `now` が発行時刻より前になっても期限切れにしない
 ///
+/// # 引数
+/// - `token`: ボタンの中身
+/// - `now`: 今の UNIX 秒
+/// - `timeout_secs`: ボタンの期限の秒数
+///
+/// # 戻り値
+/// 期限切れなら true
+///
 /// # 例
 /// ```
 /// # use watapachi_bot::ui::pagination::{is_expired, PageKind, PageToken};
@@ -273,6 +319,13 @@ pub fn is_expired(token: &PageToken, now: i64, timeout_secs: u64) -> bool {
 }
 
 /// 全ページ数。件数が 0 でも 1 ページとする。`per_page` が 0 なら 1。
+///
+/// # 引数
+/// - `count`: 件数
+/// - `per_page`: 1 ページの件数
+///
+/// # 戻り値
+/// 全ページ数 (1 以上)
 ///
 /// # 例
 /// ```
@@ -287,6 +340,13 @@ pub fn total_pages(count: u32, per_page: u32) -> u32 {
 }
 
 /// ページ番号を `0..total_pages` に収める。`total_pages` が 0 なら 0。
+///
+/// # 引数
+/// - `page`: ページ番号 (0 始まり)
+/// - `total_pages`: 全ページ数
+///
+/// # 戻り値
+/// 収めたページ番号
 ///
 /// # 例
 /// ```

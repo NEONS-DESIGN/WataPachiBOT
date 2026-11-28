@@ -143,6 +143,15 @@ pub enum NoticeColor {
 
 impl NoticeColor {
 	/// 文面のファイルの色の名前から読む。知らない名前は None。
+	///
+	/// # 引数
+	/// - `name`: 色の名前 (`red`・`yellow`・`green`・`blue`)
+	///
+	/// # 戻り値
+	/// 色の分類。知らない名前なら None
+	///
+	/// # 例
+	/// `let color = NoticeColor::parse("red");`
 	fn parse(name: &str) -> Option<NoticeColor> {
 		match name {
 			"red" => Some(NoticeColor::Red),
@@ -195,6 +204,9 @@ impl Messages {
 	/// # 引数
 	/// - `path`: 文面のファイル (messages/ja.toml など) のパス
 	///
+	/// # 戻り値
+	/// 検査済みのメッセージ表
+	///
 	/// # エラー
 	/// - 読めない: `ConfigError::Read`
 	/// - 構文エラー: `ConfigError::Parse`
@@ -222,8 +234,16 @@ impl Messages {
 	/// - `text`: TOML の本文
 	/// - `path`: エラー表示用のパス
 	///
+	/// # 戻り値
+	/// 検査済みのメッセージ表
+	///
 	/// # エラー
 	/// `load` と同じ（`Read` を除く）。
+	///
+	/// # 例
+	/// ```ignore
+	/// let messages = Messages::parse_text(&text, Path::new("messages/ja.toml"))?;
+	/// ```
 	fn parse_text(text: &str, path: &Path) -> Result<Messages, ConfigError> {
 		let root: toml::Table = toml::from_str(text).map_err(|source| ConfigError::Parse {
 			path: path.to_path_buf(),
@@ -374,6 +394,9 @@ impl MessageCatalog {
 	/// # 引数
 	/// - `dir`: 文面のファイルを置いたディレクトリ（`messages`）
 	///
+	/// # 戻り値
+	/// 全言語のメッセージ表の束
+	///
 	/// # エラー
 	/// - `Messages::load` と同じ。どの言語のファイルかはエラーのパスで分かる
 	///
@@ -413,6 +436,19 @@ impl MessageCatalog {
 }
 
 /// 必須キーの値を取り出す。無ければ `MissingMessageKey`。
+///
+/// # 引数
+/// - `raw`: `節.キー` で引ける、ファイルの値の表
+/// - `key`: 取り出すキー
+///
+/// # 戻り値
+/// キーの値
+///
+/// # エラー
+/// - キーが無ければ `ConfigError::MissingMessageKey`
+///
+/// # 例
+/// `let value = required(&raw, key)?;`
 fn required<'a>(
 	raw: &HashMap<String, &'a toml::Value>,
 	key: &str,
@@ -425,6 +461,16 @@ fn required<'a>(
 }
 
 /// `InvalidMessage` を作る。
+///
+/// # 引数
+/// - `key`: 形が違ったキー
+/// - `reason`: 違っている点の説明
+///
+/// # 戻り値
+/// `ConfigError::InvalidMessage`
+///
+/// # 例
+/// `.ok_or_else(|| invalid(key, "文字列ではありません"))?`
 fn invalid(key: &str, reason: &str) -> ConfigError {
 	ConfigError::InvalidMessage {
 		key: key.to_owned(),
@@ -434,8 +480,20 @@ fn invalid(key: &str, reason: &str) -> ConfigError {
 
 /// 通知のテーブルを読む。
 ///
+/// - `title`・`text`・`admin` は省略できる (`title` と `text` のどちらかは要る)。`color` は必須
+///
+/// # 引数
+/// - `key`: 通知のキー (エラー表示用)
+/// - `value`: ファイルの値
+///
+/// # 戻り値
+/// 通知の雛形
+///
 /// # エラー
 /// テーブルでない、色が無いか不正、題名と本文の両方が無い、文字列でない値がある: `InvalidMessage`
+///
+/// # 例
+/// `table.insert((*key).to_owned(), Entry::Notice(parse_notice(key, value)?));`
 fn parse_notice(key: &str, value: &toml::Value) -> Result<NoticeTemplate, ConfigError> {
 	let table = value
 		.as_table()
@@ -467,8 +525,18 @@ fn parse_notice(key: &str, value: &toml::Value) -> Result<NoticeTemplate, Config
 
 /// 項目の配列を読む。
 ///
+/// # 引数
+/// - `key`: 項目の並びのキー (エラー表示用)
+/// - `value`: ファイルの値
+///
+/// # 戻り値
+/// `(名前, 値)` の並び (ファイルの順)
+///
 /// # エラー
 /// 配列でない、要素が `name` と `value` の文字列を持たない: `InvalidMessage`
+///
+/// # 例
+/// `table.insert((*key).to_owned(), Entry::Fields(parse_fields(key, value)?));`
 fn parse_fields(key: &str, value: &toml::Value) -> Result<Vec<(String, String)>, ConfigError> {
 	let items = value
 		.as_array()
@@ -489,6 +557,18 @@ fn parse_fields(key: &str, value: &toml::Value) -> Result<Vec<(String, String)>,
 ///
 /// - 1 回の走査で置換するので、値の中の `{x}` は再置換されない
 /// - 引数に無い `{name}` はそのまま残す
+///
+/// # 引数
+/// - `template`: 雛形の文字列
+/// - `args`: `(名前, 値)` の並び
+///
+/// # 戻り値
+/// 置換後の文字列
+///
+/// # 例
+/// ```ignore
+/// assert_eq!(substitute("{a}-{b}", &[("a", "1")]), "1-{b}");
+/// ```
 fn substitute(template: &str, args: &[(&str, &str)]) -> String {
 	let mut out = String::with_capacity(template.len());
 	let mut rest = template;

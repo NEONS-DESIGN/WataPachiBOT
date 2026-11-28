@@ -210,6 +210,18 @@ impl VoiceAccess for DiscordVoiceAccess {
 	/// - チャンネル・ギルド・Bot の役職のどれかが分からなければ `Unknown` (debug に残す)。
 	///   Bot の役職の一部がキャッシュに無いときも `Unknown`
 	/// - 判定は `judge`。人数は Bot 自身を除いて数える
+	///
+	/// # 引数
+	/// - `guild`: ギルド
+	/// - `channel`: 入ろうとするチャンネル
+	///
+	/// # 戻り値
+	/// `Allowed`、`Denied` (理由つき)、確かめられなければ `Unknown`
+	///
+	/// # 呼び出し例
+	/// ```ignore
+	/// let verdict = access.check(guild, channel).await;
+	/// ```
 	async fn check(&self, guild: GuildId, channel: ChannelId) -> AccessVerdict {
 		let info = match self.voice_channel(guild, channel) {
 			Ok(info) => info,

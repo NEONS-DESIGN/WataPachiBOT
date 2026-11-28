@@ -11,11 +11,30 @@ use crate::guild::registry::{GuildRegistry, SendError};
 use crate::lang::GuildLangs;
 
 /// 結果の通知を作る。引数なしなら `args` は空。
+///
+/// # 引数
+/// - `key`: 文面のキー
+/// - `args`: 文面に埋める値 (名前と値)
+///
+/// # 戻り値
+/// 文字だけの通知
+///
+/// # 呼び出し例
+/// `notice("setting.lang", Vec::new())`
 fn notice(key: &'static str, args: Vec<(&'static str, String)>) -> Notice {
 	Notice::text(key, args)
 }
 
 /// ユーザーのメンションの文字列。
+///
+/// # 引数
+/// - `id`: ユーザー ID の値
+///
+/// # 戻り値
+/// `<@id>` の形の文字列
+///
+/// # 呼び出し例
+/// `mention(user.get())`
 fn mention(id: u64) -> String {
 	format!("<@{id}>")
 }

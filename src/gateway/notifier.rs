@@ -86,6 +86,9 @@ impl DiscordNotifier {
 	/// - `ui`: Embed の URL の雛形
 	/// - `prefix`: コマンドの接頭辞 (本文の `{prefix}` を置き換える)
 	///
+	/// # 戻り値
+	/// 送信口
+	///
 	/// # 呼び出し例
 	/// ```ignore
 	/// let notifier = DiscordNotifier::new(http, cache, catalog, langs, config.ui.clone(), "?".into());
@@ -131,6 +134,18 @@ impl DiscordNotifier {
 	}
 
 	/// 通知を Embed にする。カードなら、キャッシュからリクエストした人の表示を引いて渡す。
+	///
+	/// # 引数
+	/// - `channel`: 送り先のテキストチャンネル (文面の言語を決める)
+	/// - `notice`: 通知
+	///
+	/// # 戻り値
+	/// 通知の Embed
+	///
+	/// # 呼び出し例
+	/// ```ignore
+	/// let embed = self.embed(channel, &notice);
+	/// ```
 	fn embed(&self, channel: ChannelId, notice: &Notice) -> Embed {
 		let requester = notice.card.as_ref().and_then(|card| {
 			let (guild, user) = card.requester();
@@ -146,6 +161,18 @@ impl DiscordNotifier {
 	}
 
 	/// カードの通知の簡易表示。カードでなければ None。
+	///
+	/// # 引数
+	/// - `channel`: 送り先のテキストチャンネル (文面の言語を決める)
+	/// - `notice`: 通知
+	///
+	/// # 戻り値
+	/// 簡易表示の Embed。カードでなければ None
+	///
+	/// # 呼び出し例
+	/// ```ignore
+	/// let fallback = self.fallback(channel, &notice)?;
+	/// ```
 	fn fallback(&self, channel: ChannelId, notice: &Notice) -> Option<Embed> {
 		notice
 			.card
@@ -180,6 +207,12 @@ impl DiscordNotifier {
 	}
 
 	/// 送信済みのメッセージのボタンを差し替える (本文は変えない)。空の並びならボタンを外す。
+	///
+	/// - `SEND_TIMEOUT` を過ぎたら false
+	///
+	/// # 引数
+	/// - `target`: 差し替えるメッセージ
+	/// - `components`: 新しいボタン
 	///
 	/// # 戻り値
 	/// 差し替えられたら true。失敗 (削除済みなど) は debug のログだけ残して false
@@ -216,6 +249,21 @@ impl DiscordNotifier {
 	}
 
 	/// Embed とボタンを送り、結果を分類する。失敗は warn のログを残す。
+	///
+	/// - 送信と応答の本文の受信をまとめて `SEND_TIMEOUT` で打ち切る (過ぎたら `Failed`)
+	///
+	/// # 引数
+	/// - `channel`: 送り先のテキストチャンネル
+	/// - `embed`: 本文
+	/// - `components`: ボタン (空なら付けない)
+	///
+	/// # 戻り値
+	/// 届いたら送ったメッセージの場所を持つ `Done`。中身を拒まれたら `Rejected`、それ以外の失敗は `Failed`
+	///
+	/// # 呼び出し例
+	/// ```ignore
+	/// match self.post(channel, embed, &[]).await { Delivery::Done(sent) => sent, _ => None }
+	/// ```
 	async fn post(&self, channel: ChannelId, embed: Embed, components: &[Component]) -> Delivery {
 		let embeds = [embed];
 		let mut request = self.http.create_message(channel).embeds(&embeds);
@@ -256,6 +304,20 @@ impl DiscordNotifier {
 	}
 
 	/// 送信済みのメッセージの Embed を書き換え、結果を分類する。失敗は warn のログを残す。
+	///
+	/// - `SEND_TIMEOUT` を過ぎたら `Failed`
+	///
+	/// # 引数
+	/// - `target`: 書き換えるメッセージ
+	/// - `embed`: 新しい本文
+	///
+	/// # 戻り値
+	/// 書き換えたら `Done(None)`。中身を拒まれたら `Rejected`、それ以外の失敗は `Failed`
+	///
+	/// # 呼び出し例
+	/// ```ignore
+	/// let edited = matches!(self.patch(target, embed).await, Delivery::Done(_));
+	/// ```
 	async fn patch(&self, target: MessageRef, embed: Embed) -> Delivery {
 		let embeds = [embed];
 		let request = self
@@ -305,6 +367,17 @@ pub fn is_content_rejection(status: StatusCode) -> bool {
 }
 
 /// HTTP のエラーを、中身を拒まれたか (400、送る前の検査の失敗) で分ける。
+///
+/// # 引数
+/// - `error`: twilight-http のエラー
+///
+/// # 戻り値
+/// 中身を拒まれたなら `Rejected`、それ以外は `Failed`
+///
+/// # 呼び出し例
+/// ```ignore
+/// Err(error) => return classify(&error),
+/// ```
 fn classify(error: &HttpError) -> Delivery {
 	match error.kind() {
 		ErrorType::Response { status, .. } if is_content_rejection(*status) => Delivery::Rejected,
@@ -316,6 +389,10 @@ fn classify(error: &HttpError) -> Delivery {
 #[async_trait]
 impl Notifier for DiscordNotifier {
 	/// 通知を Embed にして送る。カードを拒まれたら簡易表示で送り直す。
+	///
+	/// # 引数
+	/// - `channel`: 送り先のテキストチャンネル
+	/// - `notice`: 通知
 	///
 	/// # 戻り値
 	/// 送ったメッセージの場所。失敗したら None
@@ -341,6 +418,10 @@ impl Notifier for DiscordNotifier {
 	}
 
 	/// 送信済みのメッセージを通知の Embed に書き換える。カードを拒まれたら簡易表示に書き換える。
+	///
+	/// # 引数
+	/// - `target`: 書き換えるメッセージ
+	/// - `notice`: 通知
 	///
 	/// # 戻り値
 	/// 編集できたら true。失敗したら false

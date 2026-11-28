@@ -69,6 +69,9 @@ const HISTORY_LIST: ListKind = ListKind {
 /// - `page`: 0 始まりのページ (範囲外は最後のページ)
 /// - `issued_at`: ボタンの発行時刻 (UNIX 秒)
 ///
+/// # 戻り値
+/// ヘルプのページの Embed とページ送りのボタン
+///
 /// # 呼び出し例
 /// ```ignore
 /// let reply = help_page(&messages, &config.ui, &config.limits, "?", 0, now).await;
@@ -117,6 +120,14 @@ pub async fn help_page(
 /// - `ui`: UI の設定
 /// - `prefix`: コマンドの接頭辞 (文面の `{prefix}` を置き換える)
 /// - `key`: 文面のキー
+///
+/// # 戻り値
+/// 説明だけの Embed とボタンなしの Reply
+///
+/// # 呼び出し例
+/// ```ignore
+/// let reply = empty_reply(messages, ui, "?", "error.queue_empty");
+/// ```
 fn empty_reply(messages: &Messages, ui: &UiConfig, prefix: &str, key: &'static str) -> Reply {
 	let notice = Notice::text(key, Vec::new());
 	Reply {
@@ -152,6 +163,9 @@ struct PageRows {
 /// - `count`: 件数を数える関数
 /// - `list`: 開始位置と件数を受けて行を読む関数
 /// - `item`: 行から曲を取り出す関数
+///
+/// # 戻り値
+/// 全件数、丸めたページ、そのページの曲
 ///
 /// # エラー
 /// - DB の読み取りの失敗
@@ -193,6 +207,23 @@ async fn read_page<T: 'static>(
 /// 件数と 1 ページ分の行から Reply を組み立てる。
 ///
 /// - `lines` の番号は呼び出し側が振る
+///
+/// # 引数
+/// - `messages`: メッセージ表
+/// - `ui`: UI の設定
+/// - `list`: 一覧の種類
+/// - `page`: 0 始まりのページ (丸め済み)
+/// - `total`: 全ページ数
+/// - `lines`: そのページの曲の行
+/// - `issued_at`: ボタンの発行時刻 (UNIX 秒)
+///
+/// # 戻り値
+/// 一覧のページの Embed とページ送りのボタン
+///
+/// # 呼び出し例
+/// ```ignore
+/// let reply = list_reply(messages, ui, &QUEUE_LIST, page, total, &lines, issued_at);
+/// ```
 fn list_reply(
 	messages: &Messages,
 	ui: &UiConfig,
@@ -228,6 +259,9 @@ fn list_reply(
 /// - `guild`: 対象のギルド
 /// - `page`: 0 始まりのページ (範囲外は丸める)
 /// - `issued_at`: ボタンの発行時刻 (UNIX 秒)
+///
+/// # 戻り値
+/// キューのページの Embed とページ送りのボタン
 ///
 /// # エラー
 /// - DB の読み取りの失敗
@@ -265,6 +299,14 @@ pub async fn queue_page(
 /// - `list`: 一覧の種類
 /// - `read`: 読み取りの結果
 /// - `issued_at`: ボタンの発行時刻 (UNIX 秒)
+///
+/// # 戻り値
+/// 一覧のページの Reply。件数が 0 なら空の一覧の Reply
+///
+/// # 呼び出し例
+/// ```ignore
+/// let reply = rows_reply(messages, ui, prefix, &QUEUE_LIST, read, issued_at);
+/// ```
 fn rows_reply(
 	messages: &Messages,
 	ui: &UiConfig,
@@ -305,6 +347,9 @@ fn rows_reply(
 /// - `guild`: 対象のギルド
 /// - `page`: 0 始まりのページ (範囲外は丸める)
 /// - `issued_at`: ボタンの発行時刻 (UNIX 秒)
+///
+/// # 戻り値
+/// 履歴のページの Embed とページ送りのボタン
 ///
 /// # エラー
 /// - DB の読み取りの失敗

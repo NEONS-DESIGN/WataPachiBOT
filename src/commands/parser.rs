@@ -71,6 +71,9 @@ pub enum ParseError {
 /// # 戻り値
 /// コマンドでなければ None。コマンドなら解析の結果
 ///
+/// # エラー
+/// - 既知のコマンドで引数の形式が違えば `Some(Err(ParseError::Usage))`、数値が範囲外なら `Some(Err(ParseError::OutOfRange))`
+///
 /// # 呼び出し例
 /// ```ignore
 /// if let Some(result) = parse("?", "?skip", &limits) { /* ... */ }
@@ -117,6 +120,18 @@ pub fn parse(
 }
 
 /// 使い方の誤りを作る。
+///
+/// # 引数
+/// - `key`: 使い方を示す messages のキー (`USAGE_*`)
+///
+/// # 戻り値
+/// 常に `Err`
+///
+/// # エラー
+/// - 常に `ParseError::Usage` (`key` を持つ)
+///
+/// # 呼び出し例
+/// `return usage(USAGE_CLEAR);`
 fn usage<T>(key: &'static str) -> Result<T, ParseError> {
 	Err(ParseError::Usage { usage: key })
 }
@@ -142,6 +157,18 @@ fn parse_u32(token: &str) -> Option<u32> {
 /// `?p <検索語または URL>`。残り全体を元の文字列のまま query にする。
 ///
 /// - 囲みと空白を除いて何も残らない引数 (`<>`、`< >`) も、引数なしと同じく使い方の誤りにする
+///
+/// # 引数
+/// - `args`: コマンド名の後ろの文字列 (前後の空白は除いてある)
+///
+/// # 戻り値
+/// `GuildCommand::Play`
+///
+/// # エラー
+/// - 引数が無い、または中身が空なら `help.usage_p` の使い方の誤り
+///
+/// # 呼び出し例
+/// `"p" => parse_play(args),`
 fn parse_play(args: &str) -> Result<ParsedCommand, ParseError> {
 	if args.is_empty() || query::classify(args) == Query::Empty {
 		return usage(USAGE_PLAY);
@@ -151,7 +178,19 @@ fn parse_play(args: &str) -> Result<ParsedCommand, ParseError> {
 	}))
 }
 
-/// `?pnow <番号>`。1 以上の整数。
+/// `?pnow <番号>`。1 以上の整数。2 つ目以降の引数は無視する。
+///
+/// # 引数
+/// - `args`: コマンド名の後ろの文字列
+///
+/// # 戻り値
+/// `GuildCommand::PlayNow`
+///
+/// # エラー
+/// - 番号が無い、整数でない、0 なら `help.usage_pnow` の使い方の誤り
+///
+/// # 呼び出し例
+/// `"pnow" => parse_pnow(args),`
 fn parse_pnow(args: &str) -> Result<ParsedCommand, ParseError> {
 	match args.split_whitespace().next().and_then(parse_u32) {
 		Some(index) if index >= 1 => Ok(ParsedCommand::Guild(GuildCommand::PlayNow { index })),
@@ -160,6 +199,18 @@ fn parse_pnow(args: &str) -> Result<ParsedCommand, ParseError> {
 }
 
 /// `?clear [開始] [終了]`。引数なしで全件、1 つで先頭から、2 つで範囲。
+///
+/// # 引数
+/// - `args`: コマンド名の後ろの文字列
+///
+/// # 戻り値
+/// `GuildCommand::Clear`
+///
+/// # エラー
+/// - 整数でない、0、開始が終了より大きい、引数が 3 つ以上なら `help.usage_clear` の使い方の誤り
+///
+/// # 呼び出し例
+/// `"clear" => parse_clear(args),`
 fn parse_clear(args: &str) -> Result<ParsedCommand, ParseError> {
 	let tokens: Vec<&str> = args.split_whitespace().collect();
 	let range = match tokens.as_slice() {
@@ -180,6 +231,18 @@ fn parse_clear(args: &str) -> Result<ParsedCommand, ParseError> {
 }
 
 /// `?vol <百分率>`。u16 に収まれば通し、範囲の判定はアクターに任せる。
+///
+/// # 引数
+/// - `args`: コマンド名の後ろの文字列
+///
+/// # 戻り値
+/// `GuildCommand::SetVolume`
+///
+/// # エラー
+/// - 値が無い、整数でない、u16 に収まらなければ `help.usage_vol` の使い方の誤り
+///
+/// # 呼び出し例
+/// `"vol" => parse_vol(args),`
 fn parse_vol(args: &str) -> Result<ParsedCommand, ParseError> {
 	match args
 		.split_whitespace()
@@ -193,6 +256,20 @@ fn parse_vol(args: &str) -> Result<ParsedCommand, ParseError> {
 }
 
 /// 値が min..=max に収まるか確かめる。
+///
+/// # 引数
+/// - `value`: 確かめる値
+/// - `min`: 下限 (含む)
+/// - `max`: 上限 (含む)
+///
+/// # 戻り値
+/// 収まれば `value` をそのまま返す
+///
+/// # エラー
+/// - 範囲外なら `ParseError::OutOfRange` (`min` と `max` を持つ)
+///
+/// # 呼び出し例
+/// `SettingCommand::QueueLimit(check_range(value, 1, limits.queue_limit_max)?)`
 fn check_range(value: u32, min: u32, max: u32) -> Result<u32, ParseError> {
 	if (min..=max).contains(&value) {
 		Ok(value)
@@ -202,6 +279,15 @@ fn check_range(value: u32, min: u32, max: u32) -> Result<u32, ParseError> {
 }
 
 /// ユーザーの指定 (`<@id>`、`<@!id>`、`id`) を読む。ロールのメンションや 0 は None。
+///
+/// # 引数
+/// - `token`: 読む文字列
+///
+/// # 戻り値
+/// 読めたユーザー ID。形式が違う、数字以外を含む、`u64` を超える、0 なら None
+///
+/// # 呼び出し例
+/// `let Some(user) = parse_user(target) else { return usage(USAGE_SETTING); };`
 fn parse_user(token: &str) -> Option<UserId> {
 	let digits = match token.strip_prefix(MENTION_OPEN) {
 		Some(inner) => {
@@ -217,6 +303,23 @@ fn parse_user(token: &str) -> Option<UserId> {
 }
 
 /// `?setting` の各サブコマンド。形式の誤りは `help.usage_setting`。
+///
+/// - `admin add|remove <ユーザー>`、`limit queue|playlist <値>`、`autoleave <秒>`、`lang <言語>` を受け付ける
+/// - サブコマンドと値は大文字小文字を区別しない
+///
+/// # 引数
+/// - `args`: コマンド名の後ろの文字列
+/// - `limits`: 数値引数の上限
+///
+/// # 戻り値
+/// `ParsedCommand::Setting`
+///
+/// # エラー
+/// - 形式が違えば `help.usage_setting` の使い方の誤り
+/// - 上限は 1 以上 (`autoleave` は 0 以上) で上限の設定まで。外れたら `ParseError::OutOfRange`
+///
+/// # 呼び出し例
+/// `"setting" => parse_setting(args, limits),`
 fn parse_setting(args: &str, limits: &LimitsConfig) -> Result<ParsedCommand, ParseError> {
 	// サブコマンドはコマンド名と同じく大文字と小文字を区別しない (メンションと数字は小文字化で変わらない)
 	let lowered: Vec<String> = args

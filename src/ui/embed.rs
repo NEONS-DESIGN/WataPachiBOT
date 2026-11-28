@@ -60,6 +60,13 @@ pub struct TrackLine {
 
 /// 文字数 (バイト数ではない) が `limit` を超えるなら、末尾を `...` にして `limit` 文字に収める。
 ///
+/// # 引数
+/// - `text`: 切る文字列
+/// - `limit`: 上限の文字数
+///
+/// # 戻り値
+/// `limit` 文字以内の文字列。収まっていればそのまま
+///
 /// # 例
 /// ```
 /// # use watapachi_bot::ui::embed::truncate;
@@ -77,6 +84,12 @@ pub fn truncate(text: &str, limit: usize) -> String {
 }
 
 /// 秒数を `MM:SS` (1 時間以上は `HH:MM:SS`) にする。None と 0 は `00:00` (旧 Bot と同じ)。
+///
+/// # 引数
+/// - `secs`: 長さの秒数 (分からなければ None)
+///
+/// # 戻り値
+/// 表示用の文字列
 ///
 /// # 例
 /// ```
@@ -97,6 +110,12 @@ pub fn format_duration(secs: Option<u32>) -> String {
 }
 
 /// 色の分類を Embed の色の値にする。
+///
+/// # 引数
+/// - `color`: 色の分類
+///
+/// # 戻り値
+/// `COLOR_*` の値
 ///
 /// # 例
 /// ```
@@ -183,6 +202,12 @@ pub fn code_span_text(text: &str) -> String {
 /// - `escape_markdown` の後に使う (改行は空白になっているため、行頭は文字列の先頭だけ)
 /// - 先頭の空白は除いてから判定する (`"  # a"` のように空白を前に置いても見出しとして効かないようにする)
 ///
+/// # 引数
+/// - `text`: 逃がし済みの文字列
+///
+/// # 戻り値
+/// 先頭の空白を除き、必要なら先頭の 1 文字を逃がした文字列
+///
 /// # 例
 /// ```ignore
 /// assert_eq!(escape_line_start("  # a"), "\\# a");
@@ -199,6 +224,19 @@ fn escape_line_start(text: &str) -> String {
 /// 逃がし済みの文字列を `limit` 文字に収める。
 ///
 /// - 切り口が逃がしの途中 (末尾が奇数個のバックスラッシュ) になったら、その 1 文字を落とす
+/// - 切ったときは末尾を `...` にする
+///
+/// # 引数
+/// - `escaped`: 逃がし済みの文字列
+/// - `limit`: 上限の文字数
+///
+/// # 戻り値
+/// `limit` 文字以内の文字列。収まっていればそのまま
+///
+/// # 例
+/// ```ignore
+/// assert_eq!(truncate_escaped("abc\\_def", 7), "abc...");
+/// ```
 fn truncate_escaped(escaped: &str, limit: usize) -> String {
 	if escaped.chars().count() <= limit {
 		return escaped.to_owned();
@@ -219,6 +257,14 @@ fn truncate_escaped(escaped: &str, limit: usize) -> String {
 /// - URL の丸括弧は記法を壊すので `%28` `%29` にする
 /// - 記法が `limit` 文字を超えるなら、逃がしたタイトルだけ (`limit` 文字に切る) にする
 ///
+/// # 引数
+/// - `title`: リンクの文字列にするタイトル (逃がす前)
+/// - `url`: リンク先
+/// - `limit`: 上限の文字数
+///
+/// # 戻り値
+/// リンクの記法、または収まらなければ逃がして切ったタイトル
+///
 /// # 例
 /// ```
 /// # use watapachi_bot::ui::embed::title_link;
@@ -236,11 +282,35 @@ pub fn title_link(title: &str, url: &str, limit: usize) -> String {
 }
 
 /// 動画の URL。`ui.watch_url` の `{id}` を動画 ID に置き換える。
+///
+/// # 引数
+/// - `ui`: URL の雛形
+/// - `id`: 動画 ID
+///
+/// # 戻り値
+/// 動画の URL
+///
+/// # 例
+/// ```ignore
+/// let url = watch_url(&config.ui, &track.video_id);
+/// ```
 pub fn watch_url(ui: &UiConfig, id: &VideoId) -> String {
 	ui.watch_url.replace("{id}", &id.0)
 }
 
 /// 動画のサムネイルの URL。`ui.thumbnail_url` の `{id}` を動画 ID に置き換える。
+///
+/// # 引数
+/// - `ui`: URL の雛形
+/// - `id`: 動画 ID
+///
+/// # 戻り値
+/// サムネイルの URL
+///
+/// # 例
+/// ```ignore
+/// let image = thumbnail_url(&config.ui, &track.video_id);
+/// ```
 pub fn thumbnail_url(ui: &UiConfig, id: &VideoId) -> String {
 	ui.thumbnail_url.replace("{id}", &id.0)
 }
@@ -266,6 +336,9 @@ pub struct Requester {
 /// - `prefix`: コマンドの接頭辞 (本文の `{prefix}` を置き換える)
 /// - `notice`: 通知
 /// - `requester`: カードを頼んだ人の表示。分からなければ None (カードにメンションの項目を足す)
+///
+/// # 戻り値
+/// 通知の Embed
 ///
 /// # 例
 /// ```ignore
@@ -314,6 +387,17 @@ pub fn notice_embed(
 }
 
 /// 題名 (256 文字で切る) と色だけを持つ Embed の組み立てを始める。
+///
+/// # 引数
+/// - `rendered`: 描画済みの通知 (題名が無ければ題名を付けない)
+///
+/// # 戻り値
+/// 題名と色を設定した組み立て途中の Embed
+///
+/// # 例
+/// ```ignore
+/// let builder = titled_builder(&messages.notice(key, &[]));
+/// ```
 fn titled_builder(rendered: &RenderedNotice) -> EmbedBuilder {
 	let builder = EmbedBuilder::new().color(color_value(rendered.color));
 	match &rendered.title {
@@ -334,6 +418,9 @@ fn titled_builder(rendered: &RenderedNotice) -> EmbedBuilder {
 /// - `key`: 通知のキー (`play.now_playing` など)
 /// - `card`: カードの中身
 /// - `requester`: 頼んだ人の表示
+///
+/// # 戻り値
+/// カードの Embed
 ///
 /// # 例
 /// ```ignore
@@ -377,6 +464,9 @@ pub fn card_embed(
 /// - `key`: カードの通知のキー
 /// - `card`: カードの中身
 ///
+/// # 戻り値
+/// 簡易表示の Embed
+///
 /// # 例
 /// ```ignore
 /// let embed = card_fallback_embed(&messages, "play.now_playing", &card);
@@ -402,6 +492,22 @@ pub fn card_fallback_embed(messages: &Messages, key: &str, card: &Card) -> Embed
 }
 
 /// 曲のカードの項目 (タイトル、再生時間、待機数) を足す。
+///
+/// - タイトルは 100 文字で切ってリンクにする。再生時間と待機数は横に並べる
+///
+/// # 引数
+/// - `builder`: 組み立て途中の Embed
+/// - `messages`: メッセージ表
+/// - `ui`: URL の雛形
+/// - `track`: 曲のカードの中身
+///
+/// # 戻り値
+/// 項目を足した組み立て途中の Embed
+///
+/// # 例
+/// ```ignore
+/// builder = track_fields(builder, messages, ui, track);
+/// ```
 fn track_fields(
 	builder: EmbedBuilder,
 	messages: &Messages,
@@ -435,6 +541,19 @@ fn track_fields(
 ///
 /// - 名前が無ければ `ui.unknown_title` を出す
 /// - 断った曲数は 1 以上のときだけ足す
+///
+/// # 引数
+/// - `builder`: 組み立て途中の Embed
+/// - `messages`: メッセージ表
+/// - `list`: プレイリストのカードの中身
+///
+/// # 戻り値
+/// 項目を足した組み立て途中の Embed
+///
+/// # 例
+/// ```ignore
+/// builder = playlist_fields(builder, messages, list);
+/// ```
 fn playlist_fields(
 	builder: EmbedBuilder,
 	messages: &Messages,
@@ -475,6 +594,22 @@ fn playlist_fields(
 }
 
 /// 頼んだ人のフッター、または (表示が分からなければ) メンションの項目を足す。
+///
+/// - アイコンの URL が不正なら、アイコンを付けずに名前だけ出す
+///
+/// # 引数
+/// - `builder`: 組み立て途中の Embed
+/// - `messages`: メッセージ表
+/// - `card`: カードの中身 (メンションに使う利用者を持つ)
+/// - `requester`: 頼んだ人の表示 (分からなければ None)
+///
+/// # 戻り値
+/// フッターか項目を足した組み立て途中の Embed
+///
+/// # 例
+/// ```ignore
+/// builder = with_requester(builder, messages, card, requester);
+/// ```
 fn with_requester(
 	builder: EmbedBuilder,
 	messages: &Messages,
@@ -508,6 +643,9 @@ fn with_requester(
 /// - `title`: Embed のタイトル (描画済み)
 /// - `lines`: このページの行 (最大 `PER_PAGE` 件を想定)
 /// - `ui`: URL の雛形
+///
+/// # 戻り値
+/// 一覧のページの Embed
 ///
 /// # 例
 /// ```ignore
