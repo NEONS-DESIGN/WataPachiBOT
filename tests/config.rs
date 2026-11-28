@@ -470,12 +470,15 @@ fn durations_are_bounded() {
 
 #[test]
 fn actor_idle_timeout_must_exceed_voice_connect_limit() {
-	// 例の設定の接続のタスクの上限は (access 3 + 2) + (join 15 + call 10 × 2 + 2) = 42 秒
+	// 例の設定の接続のタスクの上限は (access 3 + 2) + (join 15 + call 10 × 4 + 2) = 62 秒
+	// (call × 4 は、前のセッションの切断の待ち × 2 と、イベントの登録と失敗した Call の削除)
 	let config = Config::load(&root("config.example.toml")).unwrap();
 	let limits = VoiceLimits::new(&config.voice);
-	assert_eq!(limits.connect().as_secs(), 37);
+	assert_eq!(limits.connect().as_secs(), 57);
+	// 再生と準備の上限は、PipeInput の起動と Call のロックの合計に余裕を足したもの
+	assert_eq!(limits.play().as_secs(), 22);
 	let connect = (limits.access() + limits.connect()).as_secs();
-	assert_eq!(connect, 42);
+	assert_eq!(connect, 62);
 	assert_eq!(
 		invalid_key(&replace_line("actor_idle_timeout_secs", connect)).as_deref(),
 		Some("limits.actor_idle_timeout_secs")

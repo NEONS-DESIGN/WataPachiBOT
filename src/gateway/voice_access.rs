@@ -127,14 +127,35 @@ impl DiscordVoiceAccess {
 
 	/// キャッシュからボイスチャンネルの情報を複製する。参照はこの中で手放す。
 	///
+	/// # 引数
+	/// - `guild`: ギルド
+	/// - `channel`: 入ろうとするチャンネル
+	///
 	/// # 戻り値
-	/// 無い、別のギルドのもの、ボイスチャンネル (`GuildVoice`) でなければ None
-	fn voice_channel(&self, guild: GuildId, channel: ChannelId) -> Option<VoiceChannelInfo> {
-		let cached = self.cache.channel(channel)?;
-		if cached.guild_id != Some(guild) || cached.kind != ChannelType::GuildVoice {
-			return None;
+	/// チャンネルの情報
+	///
+	/// # エラー
+	/// 確かめない理由 (無い、別のギルドのもの、ボイスチャンネル (`GuildVoice`) でない)
+	///
+	/// # 呼び出し例
+	/// ```ignore
+	/// let info = self.voice_channel(guild, channel)?;
+	/// ```
+	fn voice_channel(
+		&self,
+		guild: GuildId,
+		channel: ChannelId,
+	) -> Result<VoiceChannelInfo, &'static str> {
+		let Some(cached) = self.cache.channel(channel) else {
+			return Err("チャンネルがキャッシュに無いため、権限を確かめません");
+		};
+		if cached.guild_id != Some(guild) {
+			return Err("別のギルドのチャンネルのため、権限を確かめません");
 		}
-		Some(VoiceChannelInfo {
+		if cached.kind != ChannelType::GuildVoice {
+			return Err("ボイスチャンネルでない (ステージチャンネルなど) ため、権限を確かめません");
+		}
+		Ok(VoiceChannelInfo {
 			kind: cached.kind,
 			overwrites: cached.permission_overwrites.clone().unwrap_or_default(),
 			user_limit: cached.user_limit,
@@ -145,8 +166,16 @@ impl DiscordVoiceAccess {
 	///
 	/// - REST は `rest_timeout` で打ち切る。失敗と時間切れは WARN に残す
 	///
+	/// # 引数
+	/// - `guild`: ギルド
+	///
 	/// # 戻り値
 	/// Bot の役職 (`@everyone` を含まない)。REST でもキャッシュでも分からなければ None
+	///
+	/// # 呼び出し例
+	/// ```ignore
+	/// let roles = self.bot_roles(guild).await;
+	/// ```
 	async fn bot_roles(&self, guild: GuildId) -> Option<Vec<Id<RoleMarker>>> {
 		let request = async {
 			let response = self
@@ -182,25 +211,24 @@ impl VoiceAccess for DiscordVoiceAccess {
 	///   Bot の役職の一部がキャッシュに無いときも `Unknown`
 	/// - 判定は `judge`。人数は Bot 自身を除いて数える
 	async fn check(&self, guild: GuildId, channel: ChannelId) -> AccessVerdict {
-		let Some(info) = self.voice_channel(guild, channel) else {
-			tracing::debug!(
-				guild = guild.get(),
-				channel = channel.get(),
-				"ボイスチャンネルがキャッシュに無いため、権限を確かめずに参加します"
-			);
-			return AccessVerdict::Unknown;
+		let info = match self.voice_channel(guild, channel) {
+			Ok(info) => info,
+			Err(reason) => {
+				tracing::debug!(guild = guild.get(), channel = channel.get(), "{reason}");
+				return AccessVerdict::Unknown;
+			}
 		};
 		let Some(roles) = self.bot_roles(guild).await else {
 			tracing::debug!(
 				guild = guild.get(),
-				"Bot の役職が分からないため、権限を確かめずに参加します"
+				"Bot の役職が分からないため、権限を確かめません"
 			);
 			return AccessVerdict::Unknown;
 		};
 		let Some(data) = guild_permission_data(&self.cache, guild, &roles) else {
 			tracing::debug!(
 				guild = guild.get(),
-				"ギルドの情報がキャッシュに無いため、権限を確かめずに参加します"
+				"ギルドの情報がキャッシュに無いため、権限を確かめません"
 			);
 			return AccessVerdict::Unknown;
 		};
@@ -210,7 +238,7 @@ impl VoiceAccess for DiscordVoiceAccess {
 				guild = guild.get(),
 				roles = roles.len(),
 				known = data.known_roles(),
-				"Bot の役職の一部がキャッシュに無いため、権限を確かめずに参加します"
+				"Bot の役職の一部がキャッシュに無いため、権限を確かめません"
 			);
 			return AccessVerdict::Unknown;
 		}

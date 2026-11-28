@@ -81,7 +81,7 @@ impl TrackGate {
 	///
 	/// # 引数
 	/// - `track`: 曲
-	/// - `failure`: `ChunkedRequest` の失敗の記録。`PipeInput` なら None
+	/// - `failure`: 入力の失敗の記録 (`ChunkedRequest` と `PipeInput` のどちらも持つ)。None なら常に `TrackEnded`
 	///
 	/// # 例
 	/// `let gate = TrackGate::new(TrackId(1), Some(failure));`

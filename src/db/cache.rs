@@ -140,9 +140,18 @@ pub fn put_stream(c: &Connection, stream: &ResolvedStream) -> Result<(), DbError
 		None,
 		now_secs(),
 	)?;
+	// 書き込みは切り離して行うため、届く順は解決の順と限らない。期限の古い結果で新しい結果を上書きしない
 	c.prepare_cached(
-		"INSERT OR REPLACE INTO resolve_cache (video_id, url, http_headers, filesize, format_id, expires_at, available_at)
-		 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+		"INSERT INTO resolve_cache (video_id, url, http_headers, filesize, format_id, expires_at, available_at)
+		 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+		 ON CONFLICT(video_id) DO UPDATE SET
+			url = excluded.url,
+			http_headers = excluded.http_headers,
+			filesize = excluded.filesize,
+			format_id = excluded.format_id,
+			expires_at = excluded.expires_at,
+			available_at = excluded.available_at
+		 WHERE excluded.expires_at >= resolve_cache.expires_at",
 	)?
 	.execute(params![
 		stream.video_id.0,

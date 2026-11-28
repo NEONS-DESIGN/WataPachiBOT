@@ -16,7 +16,9 @@ use std::time::{Duration, Instant};
 use rusqlite::Connection;
 use tokio::sync::{mpsc, oneshot};
 
-use super::{now_secs, DbError, BUSY_TIMEOUT_MS, STATEMENT_CACHE_CAPACITY};
+use super::{
+	now_secs, DbError, BUSY_TIMEOUT_MS, JOURNAL_SIZE_LIMIT_BYTES, STATEMENT_CACHE_CAPACITY,
+};
 use crate::domain::GuildId;
 
 /// 1 トランザクションで命令を実行し続ける時間の上限。
@@ -78,6 +80,13 @@ pub(super) fn open_writer_connection(path: &Path) -> Result<Connection, DbError>
 		)));
 	}
 	conn.pragma_update(None, "synchronous", "NORMAL")?;
+	// journal_size_limit は設定した値の行を返すため読み捨てる
+	conn.pragma_update_and_check(
+		None,
+		"journal_size_limit",
+		JOURNAL_SIZE_LIMIT_BYTES,
+		|row| row.get::<_, i64>(0),
+	)?;
 	conn.set_prepared_statement_cache_capacity(STATEMENT_CACHE_CAPACITY);
 	Ok(conn)
 }
@@ -173,6 +182,8 @@ impl DbWriter {
 	/// # 注意
 	/// - 同じギルドの未処理分は最新の値 1 件にまとまる
 	/// - `playback_state` に行が無いギルドでは何も起きない
+	/// - 取り消しに安全: キューの枠を先に確保し、印を付けてから送るまでの間に await を挟まない。
+	///   枠を待つ間に future が捨てられても、印だけが残って以後の保存が送られなくなることは無い
 	///
 	/// # 呼び出し例
 	/// ```ignore
@@ -184,27 +195,34 @@ impl DbWriter {
 		position_ms: u64,
 		paused: bool,
 	) -> Result<(), DbError> {
-		let newly_pending = {
-			let mut map = self
-				.inner
-				.pending_positions
-				.lock()
-				.map_err(|_| DbError::WriterClosed)?;
-			map.insert(guild, (position_ms, paused)).is_none()
-		};
-		// すでに命令がキューにあれば、スレッドが最新値を拾うので送らない
-		if newly_pending
-			&& self
-				.inner
-				.tx
-				.send(Command::SavePosition(guild))
-				.await
-				.is_err()
+		// すでに命令がキューにあれば、値だけを差し替える (スレッドが処理するときに最新値を拾う)。
+		// 印はスレッドがロックの中でだけ消すため、印がある間は命令がまだ処理されていない
+		if let Some(pending) = self
+			.inner
+			.pending_positions
+			.lock()
+			.map_err(|_| DbError::WriterClosed)?
+			.get_mut(&guild)
 		{
-			if let Ok(mut map) = self.inner.pending_positions.lock() {
-				map.remove(&guild);
-			}
-			return Err(DbError::WriterClosed);
+			*pending = (position_ms, paused);
+			return Ok(());
+		}
+		let permit = self
+			.inner
+			.tx
+			.reserve()
+			.await
+			.map_err(|_| DbError::WriterClosed)?;
+		let newly_pending = self
+			.inner
+			.pending_positions
+			.lock()
+			.map_err(|_| DbError::WriterClosed)?
+			.insert(guild, (position_ms, paused))
+			.is_none();
+		// 枠を待つ間に別の呼び出しが命令を送っていれば、確保した枠は使わずに返す
+		if newly_pending {
+			permit.send(Command::SavePosition(guild));
 		}
 		Ok(())
 	}

@@ -91,7 +91,8 @@ pub fn parse(
 		Some((name, args)) => (name, args.trim()),
 		None => (rest, ""),
 	};
-	let name = name.to_lowercase();
+	// コマンド名は ASCII だけのため、ASCII の小文字化で足りる (Unicode の小文字化で別の名前に化けない)
+	let name = name.to_ascii_lowercase();
 	let parsed = match name.as_str() {
 		"help" => Ok(ParsedCommand::Help),
 		"p" => parse_play(args),
@@ -120,8 +121,21 @@ fn usage<T>(key: &'static str) -> Result<T, ParseError> {
 	Err(ParseError::Usage { usage: key })
 }
 
-/// 非負の整数を読む。符号や数字以外を含めば None。
+/// 非負の整数を読む。符号 (`+` を含む) や数字以外を含めば None。
+///
+/// # 引数
+/// - `token`: 読む文字列
+///
+/// # 戻り値
+/// 読めた値。空、数字以外を含む、`u32` を超えるなら None
+///
+/// # 呼び出し例
+/// `let Some(value) = parse_u32(token) else { return usage(USAGE_VOL); };`
 fn parse_u32(token: &str) -> Option<u32> {
+	// `str::parse::<u32>` は先頭の `+` を受け付けるため、先に数字だけかを確かめる
+	if token.is_empty() || !token.bytes().all(|b| b.is_ascii_digit()) {
+		return None;
+	}
 	token.parse::<u32>().ok()
 }
 
@@ -203,7 +217,12 @@ fn parse_user(token: &str) -> Option<UserId> {
 
 /// `?setting` の各サブコマンド。形式の誤りは `help.usage_setting`。
 fn parse_setting(args: &str, limits: &LimitsConfig) -> Result<ParsedCommand, ParseError> {
-	let tokens: Vec<&str> = args.split_whitespace().collect();
+	// サブコマンドはコマンド名と同じく大文字と小文字を区別しない (メンションと数字は小文字化で変わらない)
+	let lowered: Vec<String> = args
+		.split_whitespace()
+		.map(str::to_ascii_lowercase)
+		.collect();
+	let tokens: Vec<&str> = lowered.iter().map(String::as_str).collect();
 	let command = match tokens.as_slice() {
 		["admin", op @ ("add" | "remove"), target] => {
 			let Some(user) = parse_user(target) else {

@@ -498,8 +498,9 @@ async fn forbidden_triggers_refresh_and_same_range() {
 	assert!(requests[1..].iter().all(|r| r.path == "/b"));
 }
 
+/// 期限が近い URL は、先読みの前に取り直すこと。最初の読み取りは取り直しを待たずに今の URL で取ること。
 #[tokio::test]
-async fn near_expiry_refreshes_before_fetch() {
+async fn near_expiry_refreshes_before_prefetch() {
 	let bytes = data(2500);
 	let server = RangeServer::start(bytes.clone()).await;
 	let refresher = FakeRefresher::new(Some(resolved(server.url("/b"), 2500, Some(now() + 3600))));
@@ -513,10 +514,11 @@ async fn near_expiry_refreshes_before_fetch() {
 	assert_eq!(out, bytes);
 	assert_eq!(refresher.calls(), 1);
 	let requests = server.requests();
-	assert!(!requests.is_empty());
+	assert_eq!(requests[0].path, "/a", "最初の読み取りが取り直しを待った");
+	assert!(requests.len() > 1);
 	assert!(
-		requests.iter().all(|r| r.path == "/b"),
-		"古い URL を使った: {requests:?}"
+		requests[1..].iter().all(|r| r.path == "/b"),
+		"先読みで古い URL を使った: {requests:?}"
 	);
 }
 
@@ -812,7 +814,36 @@ async fn near_expiry_check_is_rate_limited() {
 	stream.read_to_end(&mut out).await.unwrap();
 	assert_eq!(out, bytes);
 	assert_eq!(refresher.calls(), 1);
-	assert!(server.requests().iter().all(|r| r.path == "/b"));
+	// 最初の読み取りは今の URL で取り、先読みから取り直した URL を使う
+	let requests = server.requests();
+	assert_eq!(requests[0].path, "/a");
+	assert!(requests[1..].iter().all(|r| r.path == "/b"), "{requests:?}");
+}
+
+/// 期限が近くても、読み手が待つ取得は取り直し (ワーカーの解決) を待たないこと。
+#[tokio::test]
+async fn first_read_does_not_wait_for_near_expiry_refresh() {
+	let bytes = data(2500);
+	let server = RangeServer::start(bytes.clone()).await;
+	let refresher = FakeRefresher::slow(
+		Some(resolved(server.url("/b"), 2500, Some(now() + 3600))),
+		Duration::from_secs(30),
+	);
+	let mut stream = open(
+		resolved(server.url("/a"), 2500, Some(now() + 10)),
+		refresher,
+		config(1000),
+	);
+	let began = Instant::now();
+	let mut first = [0u8; 16];
+	stream.read_exact(&mut first).await.unwrap();
+	assert_eq!(&first[..], &bytes[..16]);
+	assert!(
+		began.elapsed() < Duration::from_secs(1),
+		"最初の読み取りが取り直しを待った: {:?}",
+		began.elapsed()
+	);
+	assert_eq!(server.requests()[0].path, "/a");
 }
 
 /// 応答しない取り直しは `refresh_timeout` で打ち切ること。
@@ -957,16 +988,16 @@ async fn refresh_with_available_at_waits_before_next_fetch() {
 /// 時刻が来てから新しい URL に差し替えること。
 #[tokio::test]
 async fn early_refresh_with_future_available_at_keeps_current_url_until_ready() {
-	let bytes = data(3000);
+	let bytes = data(4000);
 	let server = RangeServer::start(bytes.clone()).await;
 	let available_at = now() + 2;
 	let refresher = FakeRefresher::new(Some(resolved_available(
 		server.url("/b"),
-		3000,
+		4000,
 		Some(available_at),
 	)));
 	let mut stream = open(
-		resolved(server.url("/a"), 3000, Some(now() + 10)),
+		resolved(server.url("/a"), 4000, Some(now() + 10)),
 		Arc::clone(&refresher),
 		config(1000),
 	);
@@ -979,6 +1010,10 @@ async fn early_refresh_with_future_available_at_keeps_current_url_until_ready() 
 		"available_at まで待った: {:?}",
 		began.elapsed()
 	);
+	// 取り直しは先読みで行う。続きを読んで先読みを走らせる
+	let mut more = vec![0u8; 1500 - first.len()];
+	stream.read_exact(&mut more).await.unwrap();
+	assert_eq!(&more[..], &bytes[first.len()..1500]);
 	assert_eq!(refresher.calls(), 1);
 	assert!(
 		server.requests().iter().all(|r| r.path == "/a"),
@@ -986,19 +1021,19 @@ async fn early_refresh_with_future_available_at_keeps_current_url_until_ready() 
 		server.requests()
 	);
 
-	// available_at を過ぎてから次のチャンクを読むと、新しい URL に替わっている
+	// available_at を過ぎてから先読みの先のチャンクを読むと、新しい URL に替わっている
 	let limit = UNIX_EPOCH + Duration::from_secs(available_at as u64);
 	while SystemTime::now() < limit + Duration::from_millis(200) {
 		tokio::time::sleep(Duration::from_millis(100)).await;
 	}
-	stream.seek(SeekFrom::Start(2000)).await.unwrap();
+	stream.seek(SeekFrom::Start(3000)).await.unwrap();
 	let mut out = vec![0u8; 100];
 	stream.read_exact(&mut out).await.unwrap();
-	assert_eq!(out, bytes[2000..2100]);
+	assert_eq!(out, bytes[3000..3100]);
 	let requests = server.requests();
 	let last = requests.last().unwrap();
 	assert_eq!(last.path, "/b", "差し替えていない: {requests:?}");
-	assert_eq!(last.range, Some((2000, 2999)));
+	assert_eq!(last.range, Some((3000, 3999)));
 	assert!(last.at >= limit);
 	assert_eq!(refresher.calls(), 1, "差し替えで取り直しを重ねない");
 }

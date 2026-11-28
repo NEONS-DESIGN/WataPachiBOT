@@ -13,8 +13,11 @@
 //! - 送信はその場の `try_send` で行い、メールボックスが満杯のときはセッションごとの待ち行列に積んで
 //!   `tokio::spawn` した先で上限時間付きで送る。待ち行列がある間の後続も積むため、届く順序は送った順のまま。
 //!   届かなければ種類と曲をログに残す
-//! - 曲を止める・捨てるときは、`ChunkedRequest` の取得を取り消す (`ChunkCancel`)。ミキサーは入力を同期で
-//!   読むため、取得の待ち (再試行、`available_at`、取り直し) に入ったままだと止める命令も処理できない
+//! - 曲を止める・捨てるときは、入力の取得を取り消す (`ChunkedRequest` は `ChunkCancel`、PipeInput は
+//!   `PipeCancel` で子のツリーを終わらせる)。ミキサーは入力を同期で読むため、取得の待ち (再試行、
+//!   `available_at`、取り直し、yt-dlp の詰まり) に入ったままだと止める命令も処理できない
+//! - 入力の読み取りを `ReadActivity` で見張る。ミキサーが取得の待ちで止まっている間の位置の問い合わせは、
+//!   時間切れ (切断として回復する) にせず `Failed` で返す (呼び出し元は経過時間からの見積もりを使う)
 //! - PipeInput の起動 (子の起動、Job への登録) は同期の処理のため `spawn_blocking` で行う
 //!
 //! 注意:
@@ -51,7 +54,8 @@ use crate::audio::backend::{
 	AudioBackend, AudioError, AudioEvent, PlayRequest, TrackId, VoiceHealth, VoiceSession,
 };
 use crate::audio::chunked::{ChunkCancel, ChunkConfig, ChunkFailure, ChunkedRequest, UrlRefresher};
-use crate::audio::pipe::{PipeInput, PipeSpec};
+use crate::audio::pipe::{PipeCancel, PipeInput, PipeSpec};
+use crate::audio::watch::ReadActivity;
 use crate::config::VoiceConfig;
 use crate::domain::{ChannelId, GuildId};
 use crate::guild::message::GuildMessage;
@@ -69,6 +73,42 @@ const VIDEO_ID_PLACEHOLDER: &str = "{id}";
 const FIRST_TRACK_ID: u64 = 1;
 /// Songbird が失敗の中身を伝えなかったときの `TrackFailed` の文言。
 const UNKNOWN_PLAY_ERROR: &str = "曲の再生でエラーが起きました";
+/// 位置の問い合わせで、入力の 1 回の読み取りがこれより長く続いていたら、取得の待ちで止まっているとみなす。
+/// 通常の読み取りはバッファから写すだけで一瞬で終わる。設定項目に無いため固定値にする。
+const INPUT_STALL_GRACE: Duration = Duration::from_millis(500);
+
+/// 入力の取得の取り消しの口。
+#[derive(Clone)]
+pub enum InputCancel {
+	/// `ChunkedRequest` の取得の取り消し
+	Chunk(ChunkCancel),
+	/// PipeInput の子のプロセスツリーの終了
+	Pipe(PipeCancel),
+}
+
+impl InputCancel {
+	/// 取得を取り消す。2 回目以降は何もしない。
+	///
+	/// # 呼び出し例
+	/// `built.cancel.cancel();`
+	pub fn cancel(&self) {
+		match self {
+			Self::Chunk(cancel) => cancel.cancel(),
+			Self::Pipe(cancel) => cancel.cancel(),
+		}
+	}
+
+	/// 取り消したか。
+	///
+	/// # 呼び出し例
+	/// `assert!(built.cancel.is_cancelled());`
+	pub fn is_cancelled(&self) -> bool {
+		match self {
+			Self::Chunk(cancel) => cancel.is_cancelled(),
+			Self::Pipe(cancel) => cancel.is_cancelled(),
+		}
+	}
+}
 
 /// `InputFactory::build` が作った入力と、その付属物。
 pub struct BuiltInput {
@@ -76,8 +116,10 @@ pub struct BuiltInput {
 	pub input: Input,
 	/// 入力の失敗の記録。曲の終わりに見て `TrackEnded` か `TrackFailed` かを決める
 	pub failure: ChunkFailure,
-	/// 取得の取り消しの口。`ChunkedRequest` のときだけ Some
-	pub cancel: Option<ChunkCancel>,
+	/// 取得の取り消しの口
+	pub cancel: InputCancel,
+	/// ミキサーの読み取りの見張り
+	pub activity: ReadActivity,
 }
 
 /// 再生の入力を作る。`SongbirdBackend` が全セッションで共有する。
@@ -108,7 +150,7 @@ impl InputFactory {
 	/// - `request`: 再生の要求
 	///
 	/// # 戻り値
-	/// 入力、失敗の記録 (曲の終わりに見る)、`ChunkedRequest` のときは取り消しの口
+	/// 入力、失敗の記録 (曲の終わりに見る)、取り消しの口、読み取りの見張り
 	///
 	/// # エラー
 	/// `use_pipe` でなく `stream` が無い場合、`PipeInput` の起動に失敗した場合は `AudioError::Failed`
@@ -122,10 +164,13 @@ impl InputFactory {
 				.replace(VIDEO_ID_PLACEHOLDER, &request.video_id.0);
 			let pipe = PipeInput::spawn(&self.pipe.load(), &url, &self.job)?;
 			let failure = pipe.failure();
+			let cancel = InputCancel::Pipe(pipe.cancel_handle());
+			let activity = pipe.read_activity();
 			return Ok(BuiltInput {
 				input: pipe.into_input(),
 				failure,
-				cancel: None,
+				cancel,
+				activity,
 			});
 		}
 		let Some(stream) = request.stream.clone() else {
@@ -141,11 +186,13 @@ impl InputFactory {
 			self.chunk.clone(),
 		);
 		let failure = chunked.failure();
-		let cancel = chunked.cancel_handle();
+		let cancel = InputCancel::Chunk(chunked.cancel_handle());
+		let activity = chunked.read_activity();
 		Ok(BuiltInput {
 			input: Input::from(chunked),
 			failure,
-			cancel: Some(cancel),
+			cancel,
+			activity,
 		})
 	}
 }
@@ -297,8 +344,10 @@ struct Slot {
 	handle: TrackHandle,
 	gate: Arc<TrackGate>,
 	seekable: bool,
-	/// 取得の取り消しの口。`ChunkedRequest` のときだけ Some
-	cancel: Option<ChunkCancel>,
+	/// 取得の取り消しの口
+	cancel: InputCancel,
+	/// ミキサーの読み取りの見張り
+	activity: ReadActivity,
 }
 
 impl Slot {
@@ -312,9 +361,7 @@ impl Slot {
 		if let Err(error) = ignore_finished(self.handle.stop()) {
 			tracing::debug!(track = self.track.0, %error, "曲を止められません");
 		}
-		if let Some(cancel) = &self.cancel {
-			cancel.cancel();
-		}
+		self.cancel.cancel();
 	}
 
 	/// イベントを送らずに曲を止めて捨てる。
@@ -485,6 +532,7 @@ impl SongbirdSession {
 			input,
 			failure,
 			cancel,
+			activity,
 		} = self.build_input(request).await?;
 		let track = TrackId(self.track_ids.fetch_add(1, Ordering::SeqCst));
 		let gate = Arc::new(TrackGate::new(track, Some(failure)));
@@ -517,9 +565,7 @@ impl SongbirdSession {
 			Ok(handle) => handle,
 			Err(error) => {
 				// 載せられなかった入力の取得を残さない
-				if let Some(cancel) = &cancel {
-					cancel.cancel();
-				}
+				cancel.cancel();
 				return Err(error);
 			}
 		};
@@ -529,6 +575,7 @@ impl SongbirdSession {
 			gate,
 			seekable: !request.use_pipe,
 			cancel,
+			activity,
 		})
 	}
 
@@ -731,7 +778,9 @@ impl VoiceSession for SongbirdSession {
 	/// - 切断している間も進む (発見 K)。実際に送った位置より先になりうる
 	///
 	/// # エラー
-	/// 接続が切れている間は待たずに `NotConnected` (Songbird が曲への命令を処理せず、上限まで止まるため)
+	/// - 接続が切れている間は待たずに `NotConnected` (Songbird が曲への命令を処理せず、上限まで止まるため)
+	/// - ミキサーが入力の取得の待ちで止まっていれば、`INPUT_STALL_GRACE` の後に `Failed`。
+	///   止まったミキサーは問い合わせに答えず、時間切れにすると切断として回復が始まるため
 	async fn position(&self) -> Result<Duration, AudioError> {
 		let Some(slot) = &self.current else {
 			return Ok(Duration::ZERO);
@@ -741,8 +790,19 @@ impl VoiceSession for SongbirdSession {
 		}
 		let handle = slot.handle.clone();
 		let gate = Arc::clone(&slot.gate);
+		let activity = slot.activity.clone();
+		let track = slot.track;
 		bounded(self.call_timeout(), async move {
-			match handle.get_info().await {
+			let info = tokio::select! {
+				info = handle.get_info() => info,
+				() = activity.wait_stalled(INPUT_STALL_GRACE) => {
+					return Err(AudioError::Failed(format!(
+						"入力の取得を待っているため位置を得られません (曲 {})",
+						track.0
+					)));
+				}
+			};
+			match info {
 				Ok(info) => Ok(gate.observe_position(info.position)),
 				Err(ControlError::Finished) => gate
 					.last_position()
@@ -836,9 +896,17 @@ impl VoiceSession for SongbirdSession {
 }
 
 impl Drop for SongbirdSession {
-	/// 破棄されたセッションのイベントを送らない。
+	/// 破棄されたセッションのイベントを送らず、残った曲を止めて取得を取り消す。
+	///
+	/// - 通常は `disconnect` が曲を取り出した後のため、何もしない
 	fn drop(&mut self) {
 		self.sink.close();
+		for slot in [self.current.take(), self.preloaded.take()]
+			.into_iter()
+			.flatten()
+		{
+			slot.discard();
+		}
 	}
 }
 

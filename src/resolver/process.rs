@@ -31,6 +31,9 @@ const STDERR_RECORD_BYTES: u64 = 8 * 1024;
 /// ブロッキング用のスレッドへ渡すため、既定の 8KB では大きな応答 (10MB) で往復が千回を超え、
 /// 負荷が高いと 30 秒を超えた。Tokio の 1 回の読み取りの上限 (2MB) 以下で大きく取る。
 const STDOUT_BUFFER_BYTES: usize = 1024 * 1024;
+/// 応答 1 行の上限。改行の無い出力が続く不具合でメモリを使い切らないよう打ち切る。
+/// 最大のプレイリスト (`limits.playlist_limit_max` 件) の応答より十分に大きく取る。設定項目に無いため固定値にする。
+const MAX_RESPONSE_BYTES: u64 = 64 * 1024 * 1024;
 
 /// ワーカーの起動方法。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -185,16 +188,28 @@ impl WorkerProcess {
 			.map_err(|_| CallError::Died)?;
 		stdin.flush().await.map_err(|_| CallError::Died)?;
 
-		// 長さの制限を設けない。プレイリストの応答は大きくなる
-		let mut response = String::new();
-		match self.stdout.read_line(&mut response).await {
-			Ok(0) => return Err(CallError::Died),
-			Ok(_) => {}
-			Err(error) if error.kind() == io::ErrorKind::InvalidData => {
-				return Err(CallError::Protocol(error.to_string()));
-			}
-			Err(_) => return Err(CallError::Died),
+		// 上限 (`MAX_RESPONSE_BYTES`) までの 1 行を読む。プレイリストの応答は大きくなる
+		let mut raw = Vec::new();
+		let read = (&mut self.stdout)
+			.take(MAX_RESPONSE_BYTES)
+			.read_until(b'\n', &mut raw)
+			.await
+			.map_err(|_| CallError::Died)?;
+		if read == 0 {
+			return Err(CallError::Died);
 		}
+		if raw.last() != Some(&b'\n') {
+			// 上限で切れたなら不正な応答。改行の前に終わったなら、応答を書く途中でワーカーが死んだ
+			return Err(if read as u64 >= MAX_RESPONSE_BYTES {
+				CallError::Protocol(format!(
+					"応答が上限 ({MAX_RESPONSE_BYTES} バイト) を超えました"
+				))
+			} else {
+				CallError::Died
+			});
+		}
+		let response =
+			std::str::from_utf8(&raw).map_err(|error| CallError::Protocol(error.to_string()))?;
 		let parsed = parse_response(response.trim_end())
 			.map_err(|error| CallError::Protocol(error.to_string()))?;
 		match parsed {

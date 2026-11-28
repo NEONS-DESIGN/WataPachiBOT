@@ -5,6 +5,7 @@
 //! - `chunked::ChunkedRequest` が通常の再生に使う入力。小さな Range 要求で読み、シークできる
 //! - `pipe::PipeInput` が予備の入力。yt-dlp の標準出力を読み、シークできない
 //! - `songbird_backend` が Songbird による `AudioBackend` の実装
+//! - `watch` が入力の読み取りの見張り (ミキサーが取得の待ちで止まっているか)
 
 pub mod access;
 pub mod backend;
@@ -12,3 +13,4 @@ pub mod chunked;
 pub mod limits;
 pub mod pipe;
 pub mod songbird_backend;
+pub mod watch;

@@ -28,6 +28,9 @@ pub(crate) const BUSY_TIMEOUT_MS: u64 = 5000;
 /// - rusqlite の既定は 16 で、操作関数の文の種類 (40 前後) より少なく、追い出しと準備のし直しが起きる
 /// - 文 1 つは数 KB 程度のため、種類の数に余裕を持たせた値にする
 pub(crate) const STATEMENT_CACHE_CAPACITY: usize = 128;
+/// チェックポイントの後に WAL のファイルを縮める大きさ (`journal_size_limit`)。
+/// 期限切れの掃除などで大きく伸びた WAL が、終了の TRUNCATE まで残らないようにする
+pub(crate) const JOURNAL_SIZE_LIMIT_BYTES: i64 = 64 * 1024 * 1024;
 
 /// 現在の UNIX 秒。時計が異常なら 0。
 ///

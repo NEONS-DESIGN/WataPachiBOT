@@ -25,6 +25,11 @@ pub const MAX_DURATION_SECS: u64 = 7 * 24 * 60 * 60;
 pub const MAX_RESTORE_STAGGER_MS: u64 = 5_000;
 /// `worker.worker_count` の上限。1 台は数十 MB の Python のため、誤設定で数を作りすぎないようにする
 pub const MAX_WORKER_COUNT: u32 = 16;
+/// `db.read_connections` の上限。誤設定で接続を開きすぎてハンドルを使い切らないようにする
+pub const MAX_READ_CONNECTIONS: usize = 64;
+/// 待ち行列の容量 (`db.writer_queue`、`limits.actor_mailbox`) の上限。
+/// tokio のチャネルとセマフォは巨大な容量で panic するため、それより十分に小さく取る
+pub const MAX_CHANNEL_CAPACITY: usize = 1_000_000;
 /// `playback.initial_chunk_size_bytes` を省略したときの値 (256KiB)。
 /// 開発機の計測で、Songbird の入力の解析が先頭から数 KB しか読まず、64KiB では読み戻しで取り直しが起きたため、この大きさにする。
 pub const DEFAULT_INITIAL_CHUNK_SIZE_BYTES: u64 = 256 * 1024;
@@ -392,7 +397,11 @@ impl Config {
 			"defaults.alone_timeout_secs",
 			"limits.alone_timeout_max_secs 以下",
 		)?;
-		check(l.actor_mailbox >= 1, "limits.actor_mailbox", "1 以上")?;
+		check(
+			(1..=MAX_CHANNEL_CAPACITY).contains(&l.actor_mailbox),
+			"limits.actor_mailbox",
+			&format!("1 以上 {MAX_CHANNEL_CAPACITY} 以下"),
+		)?;
 		check_secs(
 			l.actor_idle_timeout_secs,
 			1,
@@ -541,7 +550,7 @@ impl Config {
 			Duration::from_secs(l.actor_idle_timeout_secs) > connect,
 			"limits.actor_idle_timeout_secs",
 			&format!(
-				"音声の接続を待つ上限 ({} 秒 = voice.access_check_timeout_secs + voice.join_timeout_secs + voice.call_timeout_secs × 2 + {} 秒 × 2) より長い値",
+				"音声の接続を待つ上限 ({} 秒 = voice.access_check_timeout_secs + voice.join_timeout_secs + voice.call_timeout_secs × 4 + {} 秒 × 2) より長い値",
 				connect.as_secs(),
 				OUTER_MARGIN.as_secs()
 			),
@@ -549,8 +558,16 @@ impl Config {
 
 		let db = &self.db;
 		check(db.batch_size >= 1, "db.batch_size", "1 以上")?;
-		check(db.read_connections >= 1, "db.read_connections", "1 以上")?;
-		check(db.writer_queue >= 1, "db.writer_queue", "1 以上")?;
+		check(
+			(1..=MAX_READ_CONNECTIONS).contains(&db.read_connections),
+			"db.read_connections",
+			&format!("1 以上 {MAX_READ_CONNECTIONS} 以下"),
+		)?;
+		check(
+			(1..=MAX_CHANNEL_CAPACITY).contains(&db.writer_queue),
+			"db.writer_queue",
+			&format!("1 以上 {MAX_CHANNEL_CAPACITY} 以下"),
+		)?;
 
 		check(
 			(1..=MAX_SHUTDOWN_TIMEOUT_SECS).contains(&self.shutdown.timeout_secs),

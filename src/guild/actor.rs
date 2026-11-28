@@ -558,7 +558,14 @@ impl GuildActor {
 			if cancel.load(Ordering::Acquire) {
 				return cancelled();
 			}
-			if let Some(denial) = check_access(access.as_ref(), access_limit, guild, channel).await
+			if let Some(denial) = check_access(
+				access.as_ref(),
+				access_limit,
+				guild,
+				channel,
+				AccessPurpose::Join,
+			)
+			.await
 			{
 				return GuildMessage::Connected {
 					session,
@@ -1122,7 +1129,11 @@ impl GuildActor {
 		let format_id = stream.format_id.clone();
 		// 一時停止に戻す曲は、一時停止のまま載せる (始めてから止めると一瞬音が出るため)
 		let request = play_request(stream, volume, start_at, force_pipe, paused);
-		match self.call_voice(move |voice| voice.play(request)).await {
+		let limit = self.voice_limits().play();
+		match self
+			.call_voice_within(limit, move |voice| voice.play(request))
+			.await
+		{
 			Ok(track) => {
 				self.on_started(track, format_id, paused).await;
 				Next::Stay
@@ -1505,7 +1516,11 @@ impl GuildActor {
 		let format_id = stream.format_id.clone();
 		let volume = self.settings().await.volume;
 		let request = play_request(stream, volume, Duration::ZERO, false, false);
-		match self.call_voice(move |voice| voice.preload(request)).await {
+		let limit = self.voice_limits().play();
+		match self
+			.call_voice_within(limit, move |voice| voice.preload(request))
+			.await
+		{
 			Ok(track) => self.prefetch.mark_preloaded(video_id, track, format_id),
 			Err(error) => {
 				tracing::warn!(guild = self.guild.get(), %error, "次の曲を準備できません");
@@ -1620,11 +1635,38 @@ impl GuildActor {
 	/// self.leave().await;
 	/// ```
 	async fn leave(&mut self) {
+		self.leave_while(std::future::ready(())).await;
+	}
+
+	/// `preload` 済みの曲を捨ててから、切断と `work` (DB の書き込みなど) を並行して行い、
+	/// 両方の終わりを待って Idle に戻る。
+	///
+	/// - 退出の応答が、切断と書き込みの合計でなく長い方の時間で済むようにする
+	/// - `work` はアクターを借りない future にする (`write` が返すもの)
+	///
+	/// # 引数
+	/// - `work`: 切断と並行して待つ処理
+	///
+	/// # 戻り値
+	/// `work` の結果
+	///
+	/// # 呼び出し例
+	/// ```ignore
+	/// let result = self.leave_while(self.write(move |c| store::clear_session(c, guild))).await;
+	/// ```
+	async fn leave_while<T>(&mut self, work: impl Future<Output = T>) -> T {
 		self.drop_preload_before_leave().await;
-		if let Some(session) = self.voice.take() {
-			self.disconnect_session(session).await;
-		}
+		let guild = self.guild;
+		let limit = self.voice_limits().disconnect();
+		let session = self.voice.take();
+		let disconnect = async move {
+			if let Some(session) = session {
+				disconnect_within(guild, limit, session).await;
+			}
+		};
+		let ((), result) = tokio::join!(disconnect, work);
 		self.reset_to_idle();
+		result
 	}
 
 	/// 退出の前に、`preload` 済みの曲をバックエンドから捨てる (切断の前に行う)。
@@ -1656,18 +1698,9 @@ impl GuildActor {
 	/// let key = if self.leave_and_clear().await.is_ok() { keys::LEFT } else { keys::SAVE_FAILED };
 	/// ```
 	async fn leave_and_clear(&mut self) -> Result<(), DbError> {
-		self.drop_preload_before_leave().await;
 		let guild = self.guild;
-		let limit = self.voice_limits().disconnect();
-		let session = self.voice.take();
-		let disconnect = async move {
-			if let Some(session) = session {
-				disconnect_within(guild, limit, session).await;
-			}
-		};
 		let clear = self.write(move |c| store::clear_session(c, guild));
-		let ((), result) = tokio::join!(disconnect, clear);
-		self.reset_to_idle();
+		let result = self.leave_while(clear).await;
 		if let Err(error) = &result {
 			tracing::error!(guild = guild.get(), %error, "退出の後にキューと再生状態を消せません");
 		}
@@ -1678,6 +1711,7 @@ impl GuildActor {
 	///
 	/// - 取得の不調や YouTube の利用制限で再生を止めるとき、回復の再接続に失敗したときに使う。利用者は `?p` でキューの先頭から再開できる
 	/// - 戻すのは今の曲だけで、位置は残さない (次の再生は先頭から)
+	/// - 書き込みと切断は並行して行う
 	/// - DB の書き込みに失敗したらログに残してエラーを返す (切断と Idle への遷移は済ませる)
 	///
 	/// # 戻り値
@@ -1693,13 +1727,11 @@ impl GuildActor {
 	async fn leave_keeping_queue(&mut self) -> Result<(), DbError> {
 		let guild = self.guild;
 		let item = self.current.as_ref().map(|current| current.item.clone());
-		let result = self
-			.write(move |c| store::requeue_current(c, guild, item.as_ref()))
-			.await;
+		let requeue = self.write(move |c| store::requeue_current(c, guild, item.as_ref()));
+		let result = self.leave_while(requeue).await;
 		if let Err(error) = &result {
 			tracing::error!(guild = guild.get(), %error, "今の曲をキューへ戻せません");
 		}
-		self.leave().await;
 		result
 	}
 
@@ -2050,7 +2082,7 @@ impl GuildActor {
 
 	/// 音声セッションを、`limit` で打ち切って呼び出す。それ以外は `call_voice` と同じ。
 	///
-	/// - バックエンドの内側の上限が `voice.call_timeout_secs` より長い呼び出し (`move_to`) に使う
+	/// - バックエンドの内側の上限が `voice.call_timeout_secs` より長い呼び出し (`move_to`、`play`、`preload`) に使う
 	///
 	/// # 引数
 	/// - `limit`: 上限時間
@@ -2180,9 +2212,42 @@ async fn disconnect_within(guild: GuildId, limit: Duration, session: Box<dyn Voi
 	}
 }
 
-/// 参加の前に、Bot がボイスチャンネルに入れるかを確かめる。
+/// ボイスチャンネルの確認の目的。ログの文言を分けるために使う。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum AccessPurpose {
+	/// 参加 (`?p`、復元、回復の再接続)
+	Join,
+	/// 移動 (`?move`)
+	Move,
+}
+
+impl AccessPurpose {
+	/// 断るときのログの文言。
+	///
+	/// # 呼び出し例
+	/// `tracing::warn!("{}", purpose.denied_log());`
+	fn denied_log(self) -> &'static str {
+		match self {
+			Self::Join => "ボイスチャンネルに入れないため、参加しません",
+			Self::Move => "移動先のボイスチャンネルに入れないため、移動しません",
+		}
+	}
+
+	/// 確認が上限時間を過ぎたときのログの文言。
+	///
+	/// # 呼び出し例
+	/// `tracing::warn!("{}", purpose.timed_out_log());`
+	fn timed_out_log(self) -> &'static str {
+		match self {
+			Self::Join => "参加の前の確認が上限時間を過ぎたため、確かめずに参加します",
+			Self::Move => "移動の前の確認が上限時間を過ぎたため、確かめずに移動します",
+		}
+	}
+}
+
+/// 参加と移動の前に、Bot がボイスチャンネルに入れるかを確かめる。
 ///
-/// - 上限時間 (`VoiceLimits::access`) を過ぎたら、確かめられなかったものとして参加を許す
+/// - 上限時間 (`VoiceLimits::access`) を過ぎたら、確かめられなかったものとして許す
 /// - 断るときは WARN に理由を残す
 /// - アクターの外 (別タスク) でも使えるよう、アクターを借りない
 ///
@@ -2191,19 +2256,21 @@ async fn disconnect_within(guild: GuildId, limit: Duration, session: Box<dyn Voi
 /// - `limit`: 上限時間
 /// - `guild`: ギルド
 /// - `channel`: 入ろうとするボイスチャンネル
+/// - `purpose`: 参加か移動か (ログの文言に使う)
 ///
 /// # 戻り値
-/// 断る理由。参加してよい、または確かめられなければ None
+/// 断る理由。入ってよい、または確かめられなければ None
 ///
 /// # 呼び出し例
 /// ```ignore
-/// if let Some(denial) = check_access(access.as_ref(), limit, guild, channel).await { /* 断る */ }
+/// if let Some(denial) = check_access(access.as_ref(), limit, guild, channel, AccessPurpose::Join).await { /* 断る */ }
 /// ```
 pub(super) async fn check_access(
 	access: &dyn VoiceAccess,
 	limit: Duration,
 	guild: GuildId,
 	channel: ChannelId,
+	purpose: AccessPurpose,
 ) -> Option<Denial> {
 	match tokio::time::timeout(limit, access.check(guild, channel)).await {
 		Ok(AccessVerdict::Denied(denial)) => {
@@ -2211,7 +2278,8 @@ pub(super) async fn check_access(
 				guild = guild.get(),
 				channel = channel.get(),
 				%denial,
-				"ボイスチャンネルに入れないため、参加しません"
+				"{}",
+				purpose.denied_log()
 			);
 			Some(denial)
 		}
@@ -2220,7 +2288,8 @@ pub(super) async fn check_access(
 			tracing::warn!(
 				guild = guild.get(),
 				channel = channel.get(),
-				"参加の前の確認が上限時間を過ぎたため、確かめずに参加します"
+				"{}",
+				purpose.timed_out_log()
 			);
 			None
 		}

@@ -17,6 +17,7 @@
 //! - 終了: 位置を保存し、`playback_state` を残したまま切断して応答する (次の起動で復元する)
 //! - 呼び出し: アクターの `handle`、`run` のタイマー、`on_connected`、`on_started`、`start_next` から呼ばれる
 
+use std::future::Future;
 use std::time::Duration;
 
 use tokio::sync::oneshot;
@@ -229,28 +230,35 @@ impl GuildActor {
 	/// ```ignore
 	/// let _ = self.requeue_saved_state(saved).await;
 	/// ```
-	async fn requeue_saved_state(&mut self, saved: PlaybackState) -> Result<bool, DbError> {
+	fn requeue_saved_state(
+		&self,
+		saved: PlaybackState,
+	) -> impl Future<Output = Result<bool, DbError>> + Send + 'static {
 		let guild = self.guild;
-		let result = self.write(move |c| store::requeue_saved(c, &saved)).await;
-		match &result {
-			Ok(true) => tracing::info!(
-				guild = guild.get(),
-				"復元しない曲をキューの先頭へ戻し、再生状態を消しました"
-			),
-			Ok(false) => tracing::info!(
-				guild = guild.get(),
-				"読み込んだ後に再生状態が変わったため、キューへ戻しません"
-			),
-			Err(error) => {
-				tracing::error!(guild = guild.get(), %error, "復元しない曲をキューへ戻せません");
+		let write = self.write(move |c| store::requeue_saved(c, &saved));
+		async move {
+			let result = write.await;
+			match &result {
+				Ok(true) => tracing::info!(
+					guild = guild.get(),
+					"復元しない曲をキューの先頭へ戻し、再生状態を消しました"
+				),
+				Ok(false) => tracing::info!(
+					guild = guild.get(),
+					"読み込んだ後に再生状態が変わったため、キューへ戻しません"
+				),
+				Err(error) => {
+					tracing::error!(guild = guild.get(), %error, "復元しない曲をキューへ戻せません");
+				}
 			}
+			result
 		}
-		result
 	}
 
 	/// 復元の接続に失敗した (チャンネルが消えた、権限が無いなど)。キューを残して退出する。
 	///
-	/// - 保存されていた曲をキューの先頭へ戻し、`playback_state` を消す (1 トランザクション、`requeue_saved_state`)
+	/// - 保存されていた曲をキューの先頭へ戻し、`playback_state` を消す (1 トランザクション、`requeue_saved_state`)。
+	///   書き込みと切断は並行して行う
 	/// - キューは消さない。接続を待つ間に `?p` で入った曲も残る
 	/// - 保存されていたテキストチャンネルへ、`?p` での再開を案内する。書き込みに失敗したら `error.save_failed` を送る
 	///
@@ -263,8 +271,9 @@ impl GuildActor {
 	/// ```
 	pub(super) async fn on_restore_connect_failed(&mut self, saved: PlaybackState) {
 		let channels = self.channels;
-		let result = self.requeue_saved_state(saved).await;
-		self.leave().await;
+		// 書き込みと切断を並行して行う
+		let requeue = self.requeue_saved_state(saved);
+		let result = self.leave_while(requeue).await;
 		let Some(channels) = channels else {
 			return;
 		};

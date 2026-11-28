@@ -64,6 +64,7 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout};
 
+use crate::audio::watch::{ReadActivity, WatchedSource};
 use crate::config::Config;
 use crate::db::now_secs;
 use crate::domain::{ResolveError, ResolvedStream, VideoId};
@@ -683,6 +684,7 @@ impl Fetcher {
 	/// # 引数
 	/// - `start`: 開始バイト
 	/// - `end`: 終了バイト (終端を含まない)。`start < end` であること
+	/// - `prefetch`: 先読みか。期限前の取り直しは先読みだけが行う
 	///
 	/// # 戻り値
 	/// 取得したバイト列 (長さは `end - start`)
@@ -691,19 +693,27 @@ impl Fetcher {
 	/// `fetch_with_retry` のエラー、取り消しは `Cancelled`
 	///
 	/// # 例
-	/// `let data = Arc::clone(&fetcher).fetch(0, 1024).await?;`
-	async fn fetch(self: Arc<Self>, start: u64, end: u64) -> Result<Bytes, ChunkError> {
+	/// `let data = Arc::clone(&fetcher).fetch(0, 1024, false).await?;`
+	async fn fetch(
+		self: Arc<Self>,
+		start: u64,
+		end: u64,
+		prefetch: bool,
+	) -> Result<Bytes, ChunkError> {
 		tokio::select! {
 			biased;
 			() = self.cancel.cancelled() => Err(ChunkError::Cancelled),
-			result = self.fetch_with_retry(start, end) => result,
+			result = self.fetch_with_retry(start, end, prefetch) => result,
 		}
 	}
 
 	/// 範囲を取得する。再試行と URL の取り直しを含む。
 	///
-	/// - 試行の前に期限を確認し、近ければ先に取り直す。期限前に取り直しが失敗したら警告して
+	/// - 先読みでは、試行の前に期限を確認し、近ければ先に取り直す。期限前に取り直しが失敗したら警告して
 	///   今の URL を使い続ける (まだ使えるため)。期限を過ぎていれば失敗を返す
+	/// - 読み手が待つ取得 (再生の開始、シーク、先読みに追いついたとき) では期限前の取り直しをしない。
+	///   まだ使える URL で先に取り、取り直し (ワーカーの解決) の分だけ音を遅らせないため。
+	///   続く先読みが取り直す。期限を過ぎた URL は 403 の経路で取り直す
 	/// - 期限前の取り直しは `expiry_recheck_interval` に 1 回まで
 	/// - 403 なら取り直して同じ範囲を待たずに要求する。一時的な失敗 (`is_transient`) は `RETRY_DELAY` 待つ
 	/// - 恒久的な失敗 (404 などの 4xx、長さの不一致)、取り直しの失敗、全長の変化は再試行せずに返す
@@ -711,6 +721,7 @@ impl Fetcher {
 	/// # 引数
 	/// - `start`: 開始バイト
 	/// - `end`: 終了バイト (終端を含まない)。`start < end` であること
+	/// - `prefetch`: 先読みか
 	///
 	/// # 戻り値
 	/// 取得したバイト列 (長さは `end - start`)
@@ -719,8 +730,13 @@ impl Fetcher {
 	/// 試行回数を使い切ったときは最後の失敗。恒久的な失敗と取り直しの失敗はその場で返す
 	///
 	/// # 例
-	/// `let data = self.fetch_with_retry(0, 1024).await?;`
-	async fn fetch_with_retry(&self, start: u64, end: u64) -> Result<Bytes, ChunkError> {
+	/// `let data = self.fetch_with_retry(0, 1024, true).await?;`
+	async fn fetch_with_retry(
+		&self,
+		start: u64,
+		end: u64,
+		prefetch: bool,
+	) -> Result<Bytes, ChunkError> {
 		let attempts = self.config.attempts.max(1);
 		let mut last_error = ChunkError::Timeout;
 		for attempt in 0..attempts {
@@ -730,7 +746,7 @@ impl Fetcher {
 			}
 			// 預けた取得先の時刻が来ていれば先に差し替える (差し替えた後の URL の期限で取り直しを判定するため)
 			self.promote_pending_source();
-			if let Some(expires_at) = self.early_refresh_due() {
+			if let Some(expires_at) = prefetch.then(|| self.early_refresh_due()).flatten() {
 				if let Err(error) = self.refresh(true).await {
 					if now_secs() >= expires_at {
 						return Err(error);
@@ -816,7 +832,7 @@ impl ChunkedStream {
 			self.fetcher.blocking_size()
 		};
 		let end = start.saturating_add(size).min(self.fetcher.filesize);
-		let task = tokio::spawn(Arc::clone(&self.fetcher).fetch(start, end));
+		let task = tokio::spawn(Arc::clone(&self.fetcher).fetch(start, end, prefetch));
 		self.pending = Some(Pending {
 			start,
 			end,
@@ -1000,6 +1016,8 @@ impl AsyncMediaSource for ChunkedStream {
 /// ```
 pub struct ChunkedRequest {
 	fetcher: Arc<Fetcher>,
+	/// ミキサーの読み取りの見張り。`create_async` が作るストリームを包む
+	activity: ReadActivity,
 }
 
 impl ChunkedRequest {
@@ -1036,7 +1054,17 @@ impl ChunkedRequest {
 		};
 		Self {
 			fetcher: Arc::new(fetcher),
+			activity: ReadActivity::new(),
 		}
+	}
+
+	/// 読み取りの見張りを返す。`Input` に変換する前に取っておき、位置の問い合わせで
+	/// ミキサーが取得の待ちで止まっているかを見る。
+	///
+	/// # 例
+	/// `let activity = request.read_activity(); let input: Input = request.into();`
+	pub fn read_activity(&self) -> ReadActivity {
+		self.activity.clone()
 	}
 
 	/// 失敗の記録を返す。`Input` に変換する前に取っておき、トラックの終了時に見る。
@@ -1092,6 +1120,8 @@ impl Compose for ChunkedRequest {
 
 	/// ストリームを `AsyncAdapterStream` で包んで返す。通信は最初の読み取りで行う。
 	///
+	/// - ミキサーが読むのはアダプターのため、その外側を読み取りの見張り (`WatchedSource`) で包む
+	///
 	/// # エラー
 	/// 全長が 0 なら `AudioStreamError::Fail(ChunkError::Empty)`。`ChunkFailure` にも記録する
 	async fn create_async(
@@ -1104,7 +1134,8 @@ impl Compose for ChunkedRequest {
 		}
 		let adapter = AsyncAdapterStream::new(Box::new(self.make_stream()), ADAPTER_BUFFER);
 		Ok(AudioStream {
-			input: Box::new(adapter) as Box<dyn MediaSource>,
+			input: Box::new(WatchedSource::new(adapter, self.activity.clone()))
+				as Box<dyn MediaSource>,
 		})
 	}
 

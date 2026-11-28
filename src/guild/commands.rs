@@ -21,7 +21,7 @@ use super::supervise::Trigger;
 use super::GuildActor;
 use crate::db::{playback, settings};
 use crate::domain::ChannelId;
-use crate::guild::actor::check_access;
+use crate::guild::actor::{check_access, AccessPurpose};
 use crate::guild::message::{ClearRange, CommandContext, GuildCommand};
 use crate::guild::notices::{denial_notice, keys, plain, titled, with_args};
 use crate::guild::state::{PlayerState, SessionChannels};
@@ -556,7 +556,14 @@ impl GuildActor {
 		}
 		let access_limit = self.voice_limits().access();
 		let access = self.deps.access.clone();
-		if let Some(denial) = check_access(access.as_ref(), access_limit, self.guild, target).await
+		if let Some(denial) = check_access(
+			access.as_ref(),
+			access_limit,
+			self.guild,
+			target,
+			AccessPurpose::Move,
+		)
+		.await
 		{
 			self.notify(reply, denial_notice(&denial, target));
 			return;

@@ -4,7 +4,8 @@
 //!   失敗や時間切れのときは後始末 (Call の削除) まで行ってから戻る
 //! - 外側 (アクター) の上限は、内側の時間切れと後始末の合計に `OUTER_MARGIN` を足した値にする。
 //!   外側が先に切れると内側の後始末が走らず、Bot がボイスチャンネルに残るため
-//! - 後始末の前の持ち主の記録のロックの待ち (`CallOwners`) は含めない。アクターは切断を待ってから接続を始めるため
+//! - 接続は、同じサーバーの前のセッションの切断 (`CallOwners` のロックを `call` × 2 まで持つ) を待ってから始まる。
+//!   回復の切断の途中に `?leave` と `?p` が続くと、切断のタスクと新しい接続のタスクが並ぶため、その待ちも含める
 //!
 //! 呼び出し方:
 //! ```ignore
@@ -78,12 +79,24 @@ impl VoiceLimits {
 
 	/// アクターが `AudioBackend::connect` を待つ上限。
 	///
-	/// - 内側の最長: 参加 (`join`) → 接続のイベントの登録 (`call`) → 失敗した Call の削除 (`call`)
+	/// - 内側の最長: 前のセッションの切断の待ち (`call` × 2) → 参加 (`join`) → 接続のイベントの登録 (`call`)
+	///   → 失敗した Call の削除 (`call`)
 	///
 	/// # 呼び出し例
 	/// `timeout(limits.connect(), audio.connect(guild, channel, events)).await`
 	pub fn connect(&self) -> Duration {
-		self.join + self.call * 2 + OUTER_MARGIN
+		self.join + self.call * 4 + OUTER_MARGIN
+	}
+
+	/// アクターが `VoiceSession::play` と `VoiceSession::preload` を待つ上限。
+	///
+	/// - 内側の最長: PipeInput の起動 (`call`) → Call のロック (`call`)
+	/// - 外側が先に切れると、起動の時間切れ (`Failed`) が `Timeout` になり、切断として扱われるため
+	///
+	/// # 呼び出し例
+	/// `timeout(limits.play(), voice.play(request)).await`
+	pub fn play(&self) -> Duration {
+		self.call * 2 + OUTER_MARGIN
 	}
 
 	/// アクターが `VoiceSession::move_to` を待つ上限。

@@ -34,7 +34,7 @@ use watapachi_bot::audio::limits::{VoiceLimits, OUTER_MARGIN};
 use watapachi_bot::audio::pipe::PipeSpec;
 use watapachi_bot::audio::songbird_backend::{
 	disconnect_kind, effective_position, ended_event, session_from_call, track_start_ready,
-	CallOwners, EventSink, InputFactory, TrackGate,
+	CallOwners, EventSink, InputCancel, InputFactory, TrackGate,
 };
 use watapachi_bot::config::VoiceConfig;
 use watapachi_bot::domain::{GuildId, ResolveError, ResolvedStream, VideoId};
@@ -270,8 +270,10 @@ fn outer_voice_limits_cover_inner_steps() {
 	let join = Duration::from_secs(15);
 	assert_eq!(limits.call(), call);
 	assert_eq!(limits.join(), join);
-	// 接続: 参加 → (登録 → 削除) または (時間切れ → 削除)
-	assert_eq!(limits.connect(), join + call * 2 + OUTER_MARGIN);
+	// 接続: 前のセッションの切断の待ち (停止 → 削除) → 参加 → (登録 → 削除) または (時間切れ → 削除)
+	assert_eq!(limits.connect(), join + call * 4 + OUTER_MARGIN);
+	// 再生と準備: PipeInput の起動 → Call のロック
+	assert_eq!(limits.play(), call * 2 + OUTER_MARGIN);
 	// 移動: 参加だけ
 	assert_eq!(limits.move_to(), join + OUTER_MARGIN);
 	assert!(limits.move_to() > join);
@@ -524,7 +526,10 @@ fn factory_pipe_uses_watch_url() {
 		"http://fixture.invalid/?file={encoded}/{{id}}.wav"
 	));
 	let built = inputs.build(&request(None, true)).unwrap();
-	assert!(built.cancel.is_none(), "PipeInput には取り消しの口が無い");
+	assert!(
+		matches!(built.cancel, InputCancel::Pipe(_)),
+		"PipeInput の取り消しの口であること"
+	);
 	let failure = built.failure;
 	let Input::Live(LiveInput::Raw(mut stream), None) = built.input else {
 		panic!("Live(Raw) の入力であること");
@@ -578,7 +583,11 @@ fn factory_chunked_returns_failure() {
 		.unwrap();
 	assert!(matches!(built.input, Input::Lazy(_)));
 	assert!(built.failure.get().is_none());
-	let cancel = built.cancel.expect("ChunkedRequest の取り消しの口");
+	let cancel = built.cancel;
+	assert!(
+		matches!(cancel, InputCancel::Chunk(_)),
+		"ChunkedRequest の取り消しの口であること"
+	);
 	assert!(!cancel.is_cancelled());
 }
 

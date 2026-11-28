@@ -3,6 +3,11 @@
 //! - シークできない。先頭から再生する
 //! - 子は Job に入れる。Bot が異常終了しても OS が子を終わらせる
 //! - 入力が捨てられると `ChildContainer` の Drop が子を kill して回収する
+//! - 子ごとの Job (Bot 全体の Job の内側) にも入れ、`PipeCancel::cancel` でそのプロセスツリーを終わらせる。
+//!   ミキサーが標準出力の読み取りで止まっていても、書き手が消えて読み取りが終わり、止める命令を処理できる。
+//!   venv の python.exe はランチャーで実体を子として起動するため、子 1 つではなくツリーごと終わらせる
+//! - 取り消した子の読み取りのエラーと終了コードは失敗として記録しない
+//! - 標準出力は読み取りの見張り (`WatchedSource`) で包む。位置の問い合わせで止まっているかを見るため
 //! - 標準出力の終わり (EOF) で子の終了コードを見て、0 でなければ失敗を `ChunkFailure` に記録する。
 //!   Songbird は入力の終わりと失敗を区別しないため、バックエンドが曲の終わりにこれを見て
 //!   `TrackEnded` か `TrackFailed` かを決める。読み取りのエラーも同じく記録する
@@ -19,6 +24,7 @@
 //! let job = Job::new()?;
 //! let input = PipeInput::spawn(&spec, "https://www.youtube.com/watch?v=...", &job)?;
 //! let failure = input.failure(); // 曲の終わりに failure.get() を見る
+//! let cancel = input.cancel_handle(); // 曲を止めるときに cancel.cancel() を呼ぶ
 //! let songbird_input = input.into_input();
 //! # Ok(())
 //! # }
@@ -28,6 +34,8 @@ use std::io::{BufRead, BufReader, ErrorKind, Read, Result as IoResult};
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{ChildStderr, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use songbird::input::{AudioStream, ChildContainer, Input, LiveInput};
@@ -35,6 +43,7 @@ use symphonia::core::io::{MediaSource, ReadOnlySource};
 
 use crate::audio::backend::AudioError;
 use crate::audio::chunked::{ChunkError, ChunkFailure};
+use crate::audio::watch::{ReadActivity, WatchedSource};
 use crate::config::Config;
 use crate::platform::job::Job;
 
@@ -110,14 +119,72 @@ impl PipeSpec {
 	}
 }
 
+/// PipeInput の子のプロセスツリーを終わらせる口。複製しても同じ子を指す。
+///
+/// 呼び出し方:
+/// ```ignore
+/// let cancel = input.cancel_handle();
+/// cancel.cancel(); // 子とその子孫が終わり、標準出力が閉じる
+/// ```
+#[derive(Clone)]
+pub struct PipeCancel(Arc<PipeTree>);
+
+/// 子ごとの Job と、取り消したかの印。
+struct PipeTree {
+	/// 子のプロセスツリーだけが入る Job。捨てるとツリーが終わる。取り消しで取り出して捨てる
+	job: Mutex<Option<Job>>,
+	cancelled: AtomicBool,
+}
+
+impl PipeCancel {
+	/// 子ごとの Job から作る。
+	///
+	/// # 呼び出し例
+	/// `let cancel = PipeCancel::new(tree);`
+	fn new(job: Job) -> Self {
+		Self(Arc::new(PipeTree {
+			job: Mutex::new(Some(job)),
+			cancelled: AtomicBool::new(false),
+		}))
+	}
+
+	/// 子のプロセスツリーを終わらせる。2 回目以降は何もしない。
+	///
+	/// - 印を立ててから Job を捨てる (読み取り側が印を見て失敗として記録しないように)
+	/// - Job の `KILL_ON_JOB_CLOSE` でツリーが終わる。待たずに返る
+	///
+	/// # 呼び出し例
+	/// `cancel.cancel();`
+	pub fn cancel(&self) {
+		self.0.cancelled.store(true, Ordering::Release);
+		let job = self
+			.0
+			.job
+			.lock()
+			.unwrap_or_else(PoisonError::into_inner)
+			.take();
+		drop(job);
+	}
+
+	/// 取り消したか。
+	///
+	/// # 呼び出し例
+	/// `if cancel.is_cancelled() { return; }`
+	pub fn is_cancelled(&self) -> bool {
+		self.0.cancelled.load(Ordering::Acquire)
+	}
+}
+
 /// 子の標準出力を読み、終わりで子の終了コードを確かめる `Read`。
 ///
 /// - EOF で一度だけ子の終了を `EXIT_WAIT` まで待ち、0 以外なら失敗を記録する
 /// - 読み取りのエラー (割り込みを除く) も失敗として記録する
 /// - 捨てると中の `ChildContainer` が子を kill する
+/// - 取り消した後は、終わりもエラーも失敗として記録しない
 struct PipeReader {
 	container: ChildContainer,
 	failure: ChunkFailure,
+	cancel: PipeCancel,
 	/// 終了コードを確かめたか
 	exit_checked: bool,
 }
@@ -134,6 +201,9 @@ impl PipeReader {
 			return;
 		}
 		self.exit_checked = true;
+		if self.cancel.is_cancelled() {
+			return;
+		}
 		let Some(child) = self.container.0.last_mut() else {
 			return;
 		};
@@ -177,6 +247,10 @@ impl Read for PipeReader {
 			}
 			Ok(count) => Ok(count),
 			Err(error) if error.kind() == ErrorKind::Interrupted => Err(error),
+			Err(error) if self.cancel.is_cancelled() => {
+				tracing::debug!(%error, "取り消した yt-dlp の標準出力を読めません");
+				Err(error)
+			}
 			Err(error) => {
 				tracing::warn!(%error, "yt-dlp の標準出力を読めません");
 				self.failure.record(ChunkError::Pipe(error.to_string()));
@@ -189,6 +263,7 @@ impl Read for PipeReader {
 /// 起動済みの子 (yt-dlp) と、その標準出力。
 pub struct PipeInput {
 	reader: PipeReader,
+	activity: ReadActivity,
 }
 
 impl PipeInput {
@@ -196,6 +271,7 @@ impl PipeInput {
 	///
 	/// - `url` は http / https だけを受ける。`--` の後の最後の引数として渡す (シェルを通さない)
 	/// - 標準入力は閉じ、標準出力はパイプにする。標準エラーは読み取りスレッドへ渡す
+	/// - `job` (Bot 全体) と子ごとの Job の両方に入れる。子ごとの Job は取り消しの口が持つ
 	///
 	/// # 引数
 	/// - `spec`: 起動方法
@@ -204,12 +280,14 @@ impl PipeInput {
 	///
 	/// # エラー
 	/// `url` が http / https の URL でない場合、起動に失敗した場合、Job へ入れるのに失敗した場合は
-	/// `AudioError::Failed` (最後の場合は子を終わらせてから返す)。
+	/// `AudioError::Failed` (最後の場合は子を終わらせてから返す)。子ごとの Job を作れない場合も同じ。
 	///
 	/// # 例
 	/// `let input = PipeInput::spawn(&spec, url, &job)?;`
 	pub fn spawn(spec: &PipeSpec, url: &str, job: &Job) -> Result<PipeInput, AudioError> {
 		check_url(url)?;
+		let tree = Job::new()
+			.map_err(|error| AudioError::Failed(format!("yt-dlp の Job を作れません: {error}")))?;
 		let mut child = Command::new(&spec.python)
 			.args(&spec.args)
 			.arg(END_OF_OPTIONS)
@@ -220,7 +298,11 @@ impl PipeInput {
 			.creation_flags(CREATE_NO_WINDOW)
 			.spawn()
 			.map_err(|error| AudioError::Failed(format!("yt-dlp を起動できません: {error}")))?;
-		if let Err(error) = job.assign_std(&child) {
+		// ランチャーが実体を起動する前に入れるため、他の処理を挟まない
+		if let Err(error) = job
+			.assign_std(&child)
+			.and_then(|()| tree.assign_std(&child))
+		{
 			let _ = child.kill();
 			let _ = child.wait();
 			return Err(AudioError::Failed(format!(
@@ -234,9 +316,27 @@ impl PipeInput {
 			reader: PipeReader {
 				container: ChildContainer::from(child),
 				failure: ChunkFailure::default(),
+				cancel: PipeCancel::new(tree),
 				exit_checked: false,
 			},
+			activity: ReadActivity::new(),
 		})
+	}
+
+	/// 取り消しの口を返す。`into_input` の前に取っておき、曲を止めるときに `cancel` を呼ぶ。
+	///
+	/// # 例
+	/// `let cancel = pipe.cancel_handle(); let input = pipe.into_input();`
+	pub fn cancel_handle(&self) -> PipeCancel {
+		self.reader.cancel.clone()
+	}
+
+	/// 読み取りの見張りを返す。`into_input` の前に取っておく。
+	///
+	/// # 例
+	/// `let activity = pipe.read_activity(); let input = pipe.into_input();`
+	pub fn read_activity(&self) -> ReadActivity {
+		self.activity.clone()
 	}
 
 	/// 失敗の記録を返す。`into_input` の前に取っておき、曲の終わりに見る。
@@ -255,7 +355,10 @@ impl PipeInput {
 	/// `let input: Input = pipe.into_input();`
 	pub fn into_input(self) -> Input {
 		let stream = AudioStream {
-			input: Box::new(ReadOnlySource::new(self.reader)) as Box<dyn MediaSource>,
+			input: Box::new(ReadOnlySource::new(WatchedSource::new(
+				self.reader,
+				self.activity,
+			))) as Box<dyn MediaSource>,
 		};
 		Input::Live(LiveInput::Raw(stream), None)
 	}

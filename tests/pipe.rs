@@ -148,6 +148,50 @@ fn dropping_input_ends_child() {
 	}
 }
 
+/// 取り消しで子が終わり、読み取りが終わること。取り消した子は失敗として記録しないこと。
+///
+/// - ミキサーが読み取りで止まっていても、取り消しで書き手が消えて読み取りが返る
+#[test]
+fn cancel_ends_child_without_failure() {
+	let dir = tempfile::tempdir().unwrap();
+	let pid_file = dir.path().join("pid");
+	let job = Job::new().unwrap();
+	let url = fixture_url("infinite", &pid_file);
+	let input = PipeInput::spawn(&fake_spec(), &url, &job).unwrap();
+	let failure = input.failure();
+	let cancel = input.cancel_handle();
+	let pid = read_pid(&pid_file);
+	assert!(!cancel.is_cancelled());
+	let reader = std::thread::spawn(move || {
+		let Input::Live(LiveInput::Raw(mut stream), None) = input.into_input() else {
+			panic!("Live(Raw) の入力であること");
+		};
+		let mut sink = Vec::new();
+		// 取り消しの後は EOF かエラーで終わる。どちらでもよい
+		let _ = stream.input.read_to_end(&mut sink);
+	});
+	cancel.cancel();
+	assert!(cancel.is_cancelled());
+	let deadline = Instant::now() + Duration::from_secs(5);
+	while !reader.is_finished() {
+		assert!(
+			Instant::now() < deadline,
+			"取り消しの後も読み取りが終わらない"
+		);
+		std::thread::sleep(Duration::from_millis(50));
+	}
+	reader.join().unwrap();
+	while process_alive(pid) {
+		assert!(Instant::now() < deadline, "取り消しで子が終わらない");
+		std::thread::sleep(Duration::from_millis(100));
+	}
+	assert!(
+		failure.get().is_none(),
+		"取り消した子を失敗として記録した: {:?}",
+		failure.get()
+	);
+}
+
 #[test]
 fn dropping_job_ends_child() {
 	let dir = tempfile::tempdir().unwrap();

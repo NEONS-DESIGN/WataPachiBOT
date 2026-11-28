@@ -29,7 +29,7 @@ queue_limit_max = 10000
 playlist_limit_max = 5000
 alone_timeout_max_secs = 600
 actor_mailbox = 64
-actor_idle_timeout_secs = 600  # voice.join_timeout_secs + voice.call_timeout_secs × 2 + 2 秒より長くする
+actor_idle_timeout_secs = 600  # voice.access_check_timeout_secs + voice.join_timeout_secs + voice.call_timeout_secs × 4 + 4 秒より長くする (既定の値では 62 秒)
 
 [worker]
 worker_count = 2              # 1 から 16
