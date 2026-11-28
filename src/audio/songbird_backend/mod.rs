@@ -619,7 +619,7 @@ impl SongbirdSession {
 				dave_version: Some(stats.protocol_version),
 				encrypted_frames: stats.encrypted_frames,
 				plaintext_frames: stats.plaintext_frames,
-				withheld_frames: 0,
+				withheld_frames: stats.withheld_frames,
 			};
 		}
 		last.clone()

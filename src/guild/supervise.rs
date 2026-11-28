@@ -536,6 +536,7 @@ impl GuildActor {
 			dave_version = ?sample.dave_version,
 			encrypted = sample.encrypted_frames,
 			plaintext = sample.plaintext_frames,
+			withheld = sample.withheld_frames,
 			"音声の送信の標本"
 		);
 		if let Verdict::Unhealthy(kind) = self.sup.judge.observe(&sample, since, self.listeners) {
