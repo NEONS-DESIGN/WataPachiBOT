@@ -77,6 +77,32 @@ fn simple_commands_and_extra_text_ignored() {
 	}
 }
 
+/// 別名は元の名前と同じコマンドになり、大文字小文字を区別しないこと。
+#[test]
+fn aliases_match_original_commands() {
+	let pairs = [
+		("?p 曲名", "?play 曲名"),
+		("?pause", "?ps"),
+		("?resume", "?rs"),
+		("?replay", "?rp"),
+		("?skip", "?s"),
+		("?qlist", "?ql"),
+		("?pnow 2", "?pn 2"),
+		("?pnow", "?pn"),
+		("?sh", "?shuffle"),
+		("?vol 80", "?volume 80"),
+		("?vol", "?volume"),
+		("?rejoin", "?rj"),
+		("?p", "?PLAY"),
+		("?skip", "?S"),
+	];
+	for (original, alias) in pairs {
+		let expected = parse("?", original, &limits());
+		assert!(expected.is_some(), "{original}");
+		assert_eq!(parse("?", alias, &limits()), expected, "{alias}");
+	}
+}
+
 #[test]
 fn clear_forms() {
 	let clear = |range| Some(Ok(ParsedCommand::Guild(GuildCommand::Clear { range })));

@@ -334,7 +334,32 @@ async fn help_has_no_removed_commands() {
 		"{names:?}"
 	);
 	assert!(names.iter().any(|n| n == "?history"));
-	assert!(names.iter().any(|n| n == "?rejoin"));
+	assert!(names.iter().any(|n| n == "?rejoin / ?rj"));
+}
+
+/// 別名のあるコマンドは、ヘルプの項目名に別名を並べること。
+#[tokio::test]
+async fn help_shows_aliases() {
+	let env = Env::new();
+	let names: Vec<String> = all_help_fields(&env)
+		.await
+		.into_iter()
+		.map(|f| f.0)
+		.collect();
+	for expected in [
+		"?p / ?play [URL・タイトル]",
+		"?pause / ?ps",
+		"?resume / ?rs",
+		"?replay / ?rp",
+		"?skip / ?s",
+		"?qlist / ?ql",
+		"?pnow / ?pn [番号]",
+		"?sh / ?shuffle",
+		"?vol / ?volume [1-200]",
+		"?rejoin / ?rj",
+	] {
+		assert!(names.iter().any(|n| n == expected), "{expected}: {names:?}");
+	}
 }
 
 #[tokio::test]

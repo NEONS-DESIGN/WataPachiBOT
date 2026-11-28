@@ -139,27 +139,27 @@ name = "{prefix}help"
 value = "このヘルプ画面を表示します。"
 
 [[help.page_1]]
-name = "{prefix}p [URL・タイトル]"
+name = "{prefix}p / {prefix}play [URL・タイトル]"
 value = "音楽を再生します（YouTube の動画・プレイリストの URL と、曲名の検索に対応）。"
 
 [[help.page_1]]
-name = "{prefix}pause"
+name = "{prefix}pause / {prefix}ps"
 value = "再生中の曲を一時停止します。"
 
 [[help.page_1]]
-name = "{prefix}resume"
+name = "{prefix}resume / {prefix}rs"
 value = "一時停止中の曲の再生を再開します。"
 
 [[help.page_1]]
-name = "{prefix}replay"
+name = "{prefix}replay / {prefix}rp"
 value = "現在再生中の曲を最初から再生し直します。"
 
 [[help.page_1]]
-name = "{prefix}skip"
+name = "{prefix}skip / {prefix}s"
 value = "再生中の曲をスキップします。"
 
 [[help.page_2]]
-name = "{prefix}qlist"
+name = "{prefix}qlist / {prefix}ql"
 value = "現在のキューに入っている曲のリストを表示します。"
 
 [[help.page_2]]
@@ -167,7 +167,7 @@ name = "{prefix}history"
 value = "再生履歴を表示します。"
 
 [[help.page_2]]
-name = "{prefix}pnow [番号]"
+name = "{prefix}pnow / {prefix}pn [番号]"
 value = "キューの指定した曲を今すぐ再生します。再生中の曲は次の曲として最初から再生し直します。"
 
 [[help.page_2]]
@@ -179,11 +179,11 @@ name = "{prefix}loop"
 value = "キューのループ再生を切り替えます。"
 
 [[help.page_2]]
-name = "{prefix}sh"
+name = "{prefix}sh / {prefix}shuffle"
 value = "キューの中身をシャッフルします。"
 
 [[help.page_2]]
-name = "{prefix}vol [1-200]"
+name = "{prefix}vol / {prefix}volume [1-200]"
 value = "再生音量を変更し、設定を保存します。"
 
 [[help.page_3]]
@@ -191,7 +191,7 @@ name = "{prefix}move"
 value = "BOTを自分のいるボイスチャンネルへ移動させます。"
 
 [[help.page_3]]
-name = "{prefix}rejoin"
+name = "{prefix}rejoin / {prefix}rj"
 value = "BOTを退出させて再参加させ、続きから再生します。"
 
 [[help.page_3]]

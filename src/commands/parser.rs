@@ -61,6 +61,7 @@ pub enum ParseError {
 /// - prefix で始まり、既知のコマンド名のときだけ Some を返す
 /// - 未知の名前、prefix だけ、prefix の直後が空白のときは None
 /// - コマンド名は大文字小文字を区別しない。引数は空白で区切る
+/// - 一部のコマンドは別名 (`play` と `p`、`ps` と `pause` など) でも同じコマンドになる
 /// - 引数を取らないコマンドは、後ろの余分な文字列を無視する
 ///
 /// # 引数
@@ -98,20 +99,20 @@ pub fn parse(
 	let name = name.to_ascii_lowercase();
 	let parsed = match name.as_str() {
 		"help" => Ok(ParsedCommand::Help),
-		"p" => parse_play(args),
-		"pause" => Ok(ParsedCommand::Guild(GuildCommand::Pause)),
-		"resume" => Ok(ParsedCommand::Guild(GuildCommand::Resume)),
-		"replay" => Ok(ParsedCommand::Guild(GuildCommand::Replay)),
-		"skip" => Ok(ParsedCommand::Guild(GuildCommand::Skip)),
-		"qlist" => Ok(ParsedCommand::QueueList),
-		"pnow" => parse_pnow(args),
+		"p" | "play" => parse_play(args),
+		"pause" | "ps" => Ok(ParsedCommand::Guild(GuildCommand::Pause)),
+		"resume" | "rs" => Ok(ParsedCommand::Guild(GuildCommand::Resume)),
+		"replay" | "rp" => Ok(ParsedCommand::Guild(GuildCommand::Replay)),
+		"skip" | "s" => Ok(ParsedCommand::Guild(GuildCommand::Skip)),
+		"qlist" | "ql" => Ok(ParsedCommand::QueueList),
+		"pnow" | "pn" => parse_pnow(args),
 		"clear" => parse_clear(args),
 		"loop" => Ok(ParsedCommand::Guild(GuildCommand::ToggleLoop)),
-		"sh" => Ok(ParsedCommand::Guild(GuildCommand::Shuffle)),
-		"vol" => parse_vol(args),
+		"sh" | "shuffle" => Ok(ParsedCommand::Guild(GuildCommand::Shuffle)),
+		"vol" | "volume" => parse_vol(args),
 		"history" => Ok(ParsedCommand::History),
 		"move" => Ok(ParsedCommand::Guild(GuildCommand::Move)),
-		"rejoin" => Ok(ParsedCommand::Guild(GuildCommand::Rejoin)),
+		"rejoin" | "rj" => Ok(ParsedCommand::Guild(GuildCommand::Rejoin)),
 		"leave" => Ok(ParsedCommand::Guild(GuildCommand::Leave)),
 		"setting" => parse_setting(args, limits),
 		_ => return None,

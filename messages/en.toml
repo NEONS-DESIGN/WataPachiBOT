@@ -135,27 +135,27 @@ name = "{prefix}help"
 value = "Shows this help screen."
 
 [[help.page_1]]
-name = "{prefix}p [URL / title]"
+name = "{prefix}p / {prefix}play [URL or title]"
 value = "Plays music (supports YouTube video and playlist URLs, and searching by song name)."
 
 [[help.page_1]]
-name = "{prefix}pause"
+name = "{prefix}pause / {prefix}ps"
 value = "Pauses the current track."
 
 [[help.page_1]]
-name = "{prefix}resume"
+name = "{prefix}resume / {prefix}rs"
 value = "Resumes the paused track."
 
 [[help.page_1]]
-name = "{prefix}replay"
+name = "{prefix}replay / {prefix}rp"
 value = "Restarts the current track from the beginning."
 
 [[help.page_1]]
-name = "{prefix}skip"
+name = "{prefix}skip / {prefix}s"
 value = "Skips the current track."
 
 [[help.page_2]]
-name = "{prefix}qlist"
+name = "{prefix}qlist / {prefix}ql"
 value = "Shows the list of tracks in the queue."
 
 [[help.page_2]]
@@ -163,7 +163,7 @@ name = "{prefix}history"
 value = "Shows the playback history."
 
 [[help.page_2]]
-name = "{prefix}pnow [number]"
+name = "{prefix}pnow / {prefix}pn [number]"
 value = "Plays the specified track in the queue right now. The current track restarts from the beginning as the next track."
 
 [[help.page_2]]
@@ -175,11 +175,11 @@ name = "{prefix}loop"
 value = "Toggles looping of the queue."
 
 [[help.page_2]]
-name = "{prefix}sh"
+name = "{prefix}sh / {prefix}shuffle"
 value = "Shuffles the queue."
 
 [[help.page_2]]
-name = "{prefix}vol [1-200]"
+name = "{prefix}vol / {prefix}volume [1-200]"
 value = "Changes the playback volume and saves the setting."
 
 [[help.page_3]]
@@ -187,7 +187,7 @@ name = "{prefix}move"
 value = "Moves the Bot to your voice channel."
 
 [[help.page_3]]
-name = "{prefix}rejoin"
+name = "{prefix}rejoin / {prefix}rj"
 value = "Makes the Bot leave and rejoin, then resumes playback."
 
 [[help.page_3]]
